@@ -5,6 +5,9 @@ from torch.nn.modules.utils import _pair
 
 
 def normalize(x, dim=None):
+    """
+    Normalize the input tensor along the specified dimension.
+    """
     nrm = (x ** 2).sum(dim=dim, keepdim=True) ** 0.5
     nrm[nrm == 0] = 1.
     return x / nrm
@@ -12,7 +15,7 @@ def normalize(x, dim=None):
 
 class HebbianConv2d(nn.Module):
     """
-    A 2d convolutional layer that learns through Hebbian plasticity
+    A 2D convolutional layer that learns through Hebbian plasticity.
     """
 
     MODE_WTA = 'wta'
@@ -23,19 +26,19 @@ class HebbianConv2d(nn.Module):
                  w_nrm=True, bias=False, act=nn.Identity(),
                  mode=MODE_WTA, alpha=1.0, lr=0.01):
         """
+        Initialize the HebbianConv2d layer.
 
-        :param out_channels: output channels of the convolutional kernel
-        :param in_channels: input channels of the convolutional kernel
-        :param kernel_size: size of the convolutional kernel (int or tuple)
-        :param stride: stride of the convolutional kernel (int or tuple)
-        :param w_nrm: whether to normalize the weight vectors before computing outputs
-        :param act: the nonlinear activation function after convolution
-        :param mode: the learning mode, can be 'wta', 'oja', or 'basic'
-        :param alpha: weighting coefficient between hebbian and backprop updates (0 means fully backprop, 1 means fully hebbian).
-        :param lr: learning rate for the Hebbian update rule
-
+        :param in_channels: Number of input channels.
+        :param out_channels: Number of output channels.
+        :param kernel_size: Size of the convolutional kernel (int or tuple).
+        :param stride: Stride of the convolutional kernel (int or tuple).
+        :param w_nrm: Whether to normalize the weight vectors before computing outputs.
+        :param bias: Whether to include a bias term.
+        :param act: Nonlinear activation function after convolution.
+        :param mode: Learning mode, can be 'wta', 'oja', or 'basic'.
+        :param alpha: Weighting coefficient between Hebbian and backprop updates.
+        :param lr: Learning rate for the Hebbian update rule.
         """
-
         super().__init__()
         self.mode = mode
         self.out_channels = out_channels
@@ -43,6 +46,7 @@ class HebbianConv2d(nn.Module):
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
 
+        # Initialize weights
         self.weight = nn.Parameter(torch.empty((self.out_channels, self.in_channels, *self.kernel_size)),
                                    requires_grad=True)
         nn.init.xavier_normal_(self.weight)
@@ -52,88 +56,69 @@ class HebbianConv2d(nn.Module):
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
         self.alpha = alpha
-        self.lr = lr  # Learning rate for Hebbian update
-
-    def apply_weights(self, x, w):
-        """
-        This function provides the logic for combining input x and weight w
-        """
-
-        return torch.conv2d(x, w, bias=self.bias, stride=self.stride)
-
-    def compute_activation(self, x):
-        w = self.weight
-        if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
-        y = self.act(self.apply_weights(x, w))
-        return y
+        self.lr = lr
 
     def forward(self, x):
-        print("Input")
-        print(x.shape)
-        y = self.compute_activation(x)
-        print(y.shape)
-        if self.training and self.alpha != 0: self.compute_update(x, y)
+        """
+        Forward pass for the HebbianConv2d layer.
+
+        :param x: Input tensor.
+        :return: Output tensor after convolution and activation.
+        """
+        if self.w_nrm:
+            weight = normalize(self.weight, dim=(1, 2, 3))
+        else:
+            weight = self.weight
+
+        y = F.conv2d(x, weight, self.bias, stride=self.stride)
+        y = self.act(y)
+
+        if self.training:
+            self._hebbian_update(x, y)
+
         return y
 
-    def compute_update(self, x, y):
-        if self.mode not in [self.MODE_WTA, self.MODE_OJA, self.MODE_BASIC]:
-            raise NotImplementedError(
-                f"Learning mode {self.mode} unavailable for {self.__class__.__name__} layer")
+    def _hebbian_update(self, x, y):
+        """
+        Update weights based on Hebbian learning rule.
 
-        print("Update")
+        :param x: Input tensor.
+        :param y: Output tensor.
+        """
         with torch.no_grad():
-            # Unfold input to patches
-            x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-            x_unf = x_unf.permute(0, 2, 1)  # (batch, L, C*kH*kW)
-            print(x_unf.shape)
-
-            # Pre-synaptic activations (input patches)
-            x_patches = x_unf.reshape(x.size(0), -1, self.in_channels, *self.kernel_size)
-
-            # Post-synaptic activations (output of the layer)
-            y_flat = y.reshape(y.size(0), y.size(1), -1)  # (batch, out_channels, L)
-            print(y_flat.shape)
+            x_patches = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
+            x_patches = x_patches.view(x.size(0), self.in_channels, *self.kernel_size, -1)
+            y_flat = y.view(y.size(0), self.out_channels, -1)
 
             if self.mode == self.MODE_WTA:
-                # Winner-Take-All competition
-                max_activations = y_flat.argmax(dim=1, keepdim=True)  # Indices of maximum activations
-                wta_mask = torch.zeros_like(y_flat).scatter_(1, max_activations, 1.0)  # Binary mask
-                print(wta_mask.shape)
-                print(x_patches.shape)
-                # Basic Hebbian update rule
-                hebb_update = torch.einsum('bkl,bclij->bkcij', wta_mask, x_patches)
-                weight_update = hebb_update.sum(dim=0) / (wta_mask.sum() + 1e-8)  # Weighted mean update
+                # Winner-Take-All (WTA) Hebbian update rule
+                wta_mask = torch.zeros_like(y_flat)
+                wta_mask.scatter_(1, y_flat.argmax(dim=1, keepdim=True), 1)
+                hebb_update = torch.einsum('bclij,bkc->kcij', x_patches, wta_mask)
+                weight_update = hebb_update.sum(dim=0) / (wta_mask.sum() + 1e-8)
 
             elif self.mode == self.MODE_BASIC:
-                # Basic Hebbian update rule (without WTA)
-                hebb_update = torch.einsum('bkl,bclij->kcij', y_flat, x_patches)
-                weight_update = self.lr * hebb_update
+                # Basic Hebbian update rule
+                hebb_update = torch.einsum('bclij,bkc->kcij', x_patches, y_flat)
+                weight_update = self.lr * hebb_update.mean(dim=0)
 
             elif self.mode == self.MODE_OJA:
-                # Oja's rule
-                hebb_update = torch.einsum('bkl,bclij->kcij', y_flat, x_patches)  # Hebbian term
-                normalization = y_flat.pow(2).sum(dim=2, keepdim=True)  # Normalization term
-                weight_update = self.lr * (
-                            hebb_update - self.weight.unsqueeze(3).unsqueeze(4) * normalization.unsqueeze(2).unsqueeze(
-                        3))
+                # Oja's Hebbian update rule
+                hebb_update = torch.einsum('bclij,bkc->kcij', x_patches, y_flat)
+                normalization = y_flat.pow(2).sum(dim=2, keepdim=True)
+                weight_update = self.lr * (hebb_update - self.weight.unsqueeze(3).unsqueeze(4) * normalization.unsqueeze(2).unsqueeze(3)).mean(dim=0)
 
-            self.delta_w += weight_update  # Accumulate updates
+            self.delta_w += weight_update
 
     @torch.no_grad()
     def local_update(self):
         """
-        This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
-        self.weight.grad of the weight parameter.
+        Transfer the computed weight update to the gradient for the optimizer.
 
         This function should be called before optimizer.step(), so that the optimizer will use the locally computed
-        update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
-        function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
-        self.weight.grad, and this function combines this value with self.delta_w as
-        self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
-        Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
-
+        update as the optimization direction. Local updates can also be combined with end-to-end updates by calling
+        this function between loss.backward() and optimizer.step().
         """
-
         if self.weight.grad is None:
             self.weight.grad = -self.alpha * self.delta_w
         else:

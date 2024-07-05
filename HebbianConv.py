@@ -68,53 +68,56 @@ class HebbianConv2d(nn.Module):
         return y
 
     def forward(self, x):
+        print("Input")
+        print(x.shape)
         y = self.compute_activation(x)
+        print(y.shape)
         if self.training and self.alpha != 0: self.compute_update(x, y)
         return y
 
     def compute_update(self, x, y):
-        """
-        This function implements the logic that computes local plasticity rules from input x and output y.
-        The resulting weight update is stored in buffer self.delta_w for later use.
-        """
-
         if self.mode not in [self.MODE_WTA, self.MODE_OJA, self.MODE_BASIC]:
             raise NotImplementedError(
-                "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
+                f"Learning mode {self.mode} unavailable for {self.__class__.__name__} layer")
 
+        print("Update")
         with torch.no_grad():
             # Unfold input to patches
             x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-            x_unf = x_unf.permute(0, 2, 1).reshape(-1, x_unf.size(1))
+            x_unf = x_unf.permute(0, 2, 1)  # (batch, L, C*kH*kW)
+            print(x_unf.shape)
 
             # Pre-synaptic activations (input patches)
-            x_patches = x_unf.reshape(y.size(0), y.size(2), y.size(3), -1).permute(0, 3, 1,
-                                                                                   2)  # (batch_size, patch_size, height, width)
+            x_patches = x_unf.reshape(x.size(0), -1, self.in_channels, *self.kernel_size)
 
             # Post-synaptic activations (output of the layer)
-            y_flat = y.reshape(y.size(0), y.size(1), -1)  # (batch_size, out_channels, -1)
+            y_flat = y.reshape(y.size(0), y.size(1), -1)  # (batch, out_channels, L)
+            print(y_flat.shape)
 
             if self.mode == self.MODE_WTA:
                 # Winner-Take-All competition
-                max_activations = y_flat.argmax(dim=2, keepdim=True)  # Indices of maximum activations
-                wta_mask = torch.zeros_like(y_flat).scatter_(2, max_activations, 1.0)  # Binary mask
-
+                max_activations = y_flat.argmax(dim=1, keepdim=True)  # Indices of maximum activations
+                wta_mask = torch.zeros_like(y_flat).scatter_(1, max_activations, 1.0)  # Binary mask
+                print(wta_mask.shape)
+                print(x_patches.shape)
                 # Basic Hebbian update rule
-                hebb_update = torch.einsum('bijk,bikl->bjkl', wta_mask, x_patches)  # Sum of inputs for winning neurons
-                weight_update = hebb_update / wta_mask.sum(dim=(2, 3), keepdim=True)  # Weighted mean update
+                hebb_update = torch.einsum('bkl,bclij->bkcij', wta_mask, x_patches)
+                weight_update = hebb_update.sum(dim=0) / (wta_mask.sum() + 1e-8)  # Weighted mean update
 
             elif self.mode == self.MODE_BASIC:
                 # Basic Hebbian update rule (without WTA)
-                hebb_update = torch.einsum('bijk,bikl->bjkl', y, x_patches)  # Sum of inputs and outputs
-                weight_update = self.lr * hebb_update  # Apply learning rate
+                hebb_update = torch.einsum('bkl,bclij->kcij', y_flat, x_patches)
+                weight_update = self.lr * hebb_update
 
             elif self.mode == self.MODE_OJA:
                 # Oja's rule
-                hebb_update = torch.einsum('bijk,bikl->bjkl', y, x_patches)  # Hebbian term
-                normalization = y.pow(2).sum(dim=(2, 3), keepdim=True)  # Normalization term
-                weight_update = self.lr * (hebb_update - y * normalization)  # Oja's update rule
+                hebb_update = torch.einsum('bkl,bclij->kcij', y_flat, x_patches)  # Hebbian term
+                normalization = y_flat.pow(2).sum(dim=2, keepdim=True)  # Normalization term
+                weight_update = self.lr * (
+                            hebb_update - self.weight.unsqueeze(3).unsqueeze(4) * normalization.unsqueeze(2).unsqueeze(
+                        3))
 
-            self.delta_w += weight_update.reshape_as(self.weight)  # Accumulate updates
+            self.delta_w += weight_update  # Accumulate updates
 
     @torch.no_grad()
     def local_update(self):

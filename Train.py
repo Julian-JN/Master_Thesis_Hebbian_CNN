@@ -1,91 +1,92 @@
 import torch
 import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 import torch.nn.functional as F
-from HebbianClassifier import HebbianClassifier
-from HebbianConv import HebbianConv2d
 
+from HebbianConv import HebbianConv2d
+from HebbianClassifier import LinearHebbianClassifier
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
 
 
 class HebbianCNN(nn.Module):
-    def __init__(self, in_channels, conv_out_channels, kernel_size, num_classes,
-                 conv_mode='wta', conv_alpha=1.0, conv_lr=0.01,
-                 classifier_mode='oja', classifier_lr=0.01):
-        super().__init__()
-
-        self.conv = HebbianConv2d(in_channels, conv_out_channels, kernel_size,
-                                  mode=conv_mode, alpha=conv_alpha, lr=conv_lr)
-        self.gap = nn.AdaptiveAvgPool2d(1)
-        self.classifier = HebbianClassifier(conv_out_channels, num_classes,
-                                            lr=classifier_lr, mode=classifier_mode)
+    def __init__(self, num_classes, learning_rate=0.01, mode='hebbian', wta_competition='filter'):
+        super(HebbianCNN, self).__init__()
+        self.conv1 = HebbianConv2d(in_channels=1, out_channels=16, kernel_size=3, learning_rate=learning_rate,
+                                   mode=mode, wta_competition=wta_competition)
+        self.conv2 = HebbianConv2d(in_channels=16, out_channels=32, kernel_size=3, learning_rate=learning_rate,
+                                   mode=mode, wta_competition=wta_competition)
+        self.fc1 = LinearHebbianClassifier(input_dim=32 * 5 * 5, output_dim=128, learning_rate=learning_rate, mode=mode,
+                                           wta_competition=wta_competition)
+        self.fc2 = LinearHebbianClassifier(input_dim=128, output_dim=num_classes, learning_rate=learning_rate,
+                                           mode=mode, wta_competition=wta_competition)
 
     def forward(self, x):
-        x = self.conv(x)
-        x = self.gap(x).view(x.size(0), -1)
-        x = self.classifier(x)
+        x = self.conv1(x)
+        x = F.relu(F.max_pool2d(x, 2))
+        x = self.conv2(x)
+        x = F.relu(F.max_pool2d(x, 2))
+        x = x.view(x.size(0), -1)  # Flatten
+        x = F.relu(self.fc1(x))
+        x = self.fc2(x)
         return x
 
+    def update_weights(self, x):
+        conv1_output = self.conv1(x)
+        self.conv1.update_weights(x, conv1_output)
 
-class HebbianTrainer:
-    def __init__(self, model, device='cuda' if torch.cuda.is_available() else 'cpu'):
-        self.model = model
-        self.device = device
-        self.model.to(self.device)
+        conv1_activated = F.relu(F.max_pool2d(conv1_output, 2))
+        conv2_output = self.conv2(conv1_activated)
+        self.conv2.update_weights(conv1_activated, conv2_output)
 
-    def train_step(self, x, y):
-        self.model.train()
-        x, y = x.to(self.device), y.to(self.device)
+        conv2_activated = F.relu(F.max_pool2d(conv2_output, 2))
+        x_flatten = conv2_activated.view(x.size(0), -1)
+        fc1_output = F.relu(self.fc1(x_flatten))
+        self.fc1.update_weights(x_flatten, fc1_output)
 
-        # Forward pass
-        output = self.model(x)
+        fc2_output = self.fc2(fc1_output)
+        self.fc2.update_weights(fc1_output, fc2_output)
 
-        # Compute loss (for monitoring purposes only)
-        loss = F.cross_entropy(output, y)
-
-        # Apply Hebbian updates
-        self.model.conv.local_update()
-        self.model.classifier.update(self.model.gap(self.model.conv(x)).view(x.size(0), -1), output)
-        self.model.classifier.apply_update()
-
-        return loss.item()
-
-    def train(self, dataloader, num_epochs):
-        for epoch in range(num_epochs):
-            total_loss = 0
-            for x, y in dataloader:
-                loss = self.train_step(x, y)
-                total_loss += loss
-            print(f"Epoch {epoch + 1}, Loss: {total_loss / len(dataloader)}")
-
-    def evaluate(self, dataloader):
-        self.model.eval()
-        correct = 0
-        total = 0
-        with torch.no_grad():
-            for x, y in dataloader:
-                x, y = x.to(self.device), y.to(self.device)
-                outputs = self.model(x)
-                _, predicted = torch.max(outputs.data, 1)
-                total += y.size(0)
-                correct += (predicted == y).sum().item()
-        return correct / total
+        return fc2_output
 
 
-# Example usage
-in_channels = 3
-conv_out_channels = 64
-kernel_size = 3
-num_classes = 10
+def train(model, device, train_loader, epoch):
+    model.train()
+    for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(device)
+        output = model.update_weights(data)
 
-model = HebbianCNN(in_channels, conv_out_channels, kernel_size, num_classes)
-trainer = HebbianTrainer(model)
+        if batch_idx % 100 == 0:
+            pred = output.argmax(dim=1, keepdim=True)
+            correct = pred.eq(target.view_as(pred)).sum().item()
+            accuracy = 100. * correct / len(data)
+            print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} ({100. * batch_idx / len(train_loader):.0f}%)]\tAccuracy: {accuracy:.2f}%')
 
-# Create dummy dataloaders
-train_dataloader = [(torch.randn(32, in_channels, 32, 32), torch.randint(0, num_classes, (32,))) for _ in range(100)]
-test_dataloader = [(torch.randn(32, in_channels, 32, 32), torch.randint(0, num_classes, (32,))) for _ in range(20)]
 
-# Train the model
-trainer.train(train_dataloader, num_epochs=5)
+def main():
+    use_cuda = torch.cuda.is_available()
+    device = torch.device("cuda" if use_cuda else "cpu")
 
-# Evaluate the model
-accuracy = trainer.evaluate(test_dataloader)
-print(f"Test Accuracy: {accuracy:.2f}")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.1307,), (0.3081,))
+    ])
+
+    train_dataset = datasets.MNIST('../data', train=True, download=True, transform=transform)
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+
+    model = HebbianCNN(num_classes=10).to(device)
+
+    for epoch in range(1, 11):
+        train(model, device, train_loader, epoch)
+
+
+if __name__ == '__main__':
+    main()
+

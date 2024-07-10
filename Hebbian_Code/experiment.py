@@ -137,8 +137,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         print("Visualizing Filters")
         model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-        print("Visualizing Class separation")
-        model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
+        # print("Visualizing Class separation")
+        # model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
         tboard.add_scalar("Loss/test", trn_loss, epoch)
         tboard.add_scalar("Accuracy/test", trn_acc, epoch)
 

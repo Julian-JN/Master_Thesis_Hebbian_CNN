@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 
 def normalize(x, dim=None):
     nrm = (x ** 2).sum(dim=dim, keepdim=True) ** 0.5
@@ -18,15 +20,16 @@ class HebbianConv2d(nn.Module):
     MODE_SWTA = 'swta'
     MODE_HPCA = 'hpca'
     MODE_CONTRASTIVE = 'contrastive'
-    MODE_BASIC_HEBBIAN = 'basic_hebbian'
+    MODE_BASIC_HEBBIAN = 'basic'
     MODE_WTA = 'wta'
     MODE_LATERAL_INHIBITION = "lateral"
+    MODE_BCM = 'bcm'
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
                  w_nrm=True, bias=False, act=nn.Identity(),
                  mode=MODE_BASIC_HEBBIAN, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=0., wta_competition='similarity_filter', lateral_competition="filter",
-                 lateral_inhibition_strength = 0.1):
+                 lateral_inhibition_strength = 0.1, top_k = 3):
         """
 
 		:param out_channels: output channels of the convolutional kernel
@@ -61,6 +64,10 @@ class HebbianConv2d(nn.Module):
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
         self.k = k
+        self.top_k = top_k
+        self.register_buffer('y_avg', torch.zeros(out_channels))  # Average activity for BCM
+        self.alpha_bcm = 0.5
+
         self.patchwise = patchwise
         self.contrast = contrast
         self.uniformity = uniformity
@@ -94,7 +101,7 @@ class HebbianConv2d(nn.Module):
 		resulting weight update is stored in buffer self.delta_w for later use.
 		"""
         if self.mode not in [self.MODE_SWTA, self.MODE_HPCA, self.MODE_CONTRASTIVE, self.MODE_BASIC_HEBBIAN,
-                             self.MODE_WTA, self.MODE_LATERAL_INHIBITION]:
+                             self.MODE_WTA, self.MODE_LATERAL_INHIBITION, self.MODE_BCM]:
             raise NotImplementedError(
                 "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
 
@@ -160,102 +167,83 @@ class HebbianConv2d(nn.Module):
                 self.delta_w += y_unf.t().matmul(x_unf).reshape_as(self.weight)
 
         if self.mode == self.MODE_WTA:
-            print("WTA")
             with torch.no_grad():
                 # Unfold the input tensor
-                print(x.shape)
                 x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
                 x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
-                print(x_unf.shape)
                 y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
-                print(y_unf.shape)
 
                 if self.wta_competition == 'filter':
-                    y_max, _ = y_unf.max(dim=-1, keepdim=True)
-                    y_unf = (y_unf == y_max).float() * y_unf
+                    topk_values, _ = y_unf.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    y_unf = (y_unf >= topk_values[..., -1, None]).float() * y_unf
                 elif self.wta_competition == 'spatial':
-                    y_max, _ = y_unf.reshape(-1, y_unf.size(-1)).max(dim=0, keepdim=True)
-                    y_unf = (y_unf == y_max.view(1, 1, 1, -1)).float() * y_unf
+                    y_unf_flat = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size * H * W, out_channels]
+                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    topk_values = topk_values[-1, :]  # Keep only the k-th largest value for each channel
+                    y_unf = (y_unf >= topk_values).float() * y_unf
                 elif self.wta_competition == 'combined':
-                    y_max_filter, _ = y_unf.max(dim=-1, keepdim=True)
-                    y_max_spatial, _ = y_unf.reshape(-1, y_unf.size(-1)).max(dim=0, keepdim=True)
-                    y_unf = ((y_unf == y_max_filter) | (y_unf == y_max_spatial.view(1, 1, 1, -1))).float() * y_unf
+                    topk_values_filter, _ = y_unf.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    topk_values_filter = topk_values_filter[..., -1, None]
+                    y_unf_flat = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size * H * W, out_channels]
+                    topk_values_spatial, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    topk_values_spatial = topk_values_spatial[-1,:]  # Keep only the k-th largest value for each channel
+                    y_unf = ((y_unf >= topk_values_filter) | (y_unf >= topk_values_spatial)).float() * y_unf
+
                 elif self.wta_competition == 'similarity_filter' or self.wta_competition == 'similarity_spatial':
-                    # Compute similarity between weights and inputs
-                    weight_unf = self.weight.view(self.weight.size(0), -1)
-                    similarity = torch.matmul(x_unf, weight_unf.t())  # Shape: [batch_size, H*W, out_channels]
-
-                    if self.wta_competition == 'similarity_filter':
-                        max_similarity, _ = similarity.max(dim=-1, keepdim=True)
-                        similarity_mask = (similarity == max_similarity).float()
-                    else:  # similarity_spatial
-                        max_similarity, _ = similarity.reshape(-1, similarity.size(-1)).max(dim=0, keepdim=True)
-                        similarity_mask = (similarity == max_similarity.view(1, 1, -1)).float()
-
-                    y_unf = similarity_mask * y_unf.view(*similarity.shape)
+                        # Compute similarity between weights and inputs
+                        weight_unf = self.weight.view(self.weight.size(0), -1)
+                        similarity = torch.matmul(x_unf, weight_unf.t())
+                        if self.wta_competition == 'similarity_filter':
+                            topk_similarity, _ = similarity.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                            topk_similarity = topk_similarity[..., -1, None]
+                        else:  # similarity_spatial
+                            similarity_flat = similarity.reshape(-1, similarity.size(-1))
+                            topk_similarity, _ = similarity_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                            topk_similarity = topk_similarity[-1, :]
+                        similarity_mask = (similarity >= topk_similarity).float()
+                        y_unf = similarity_mask * y_unf.view(*similarity.shape)
+                        y_unf = similarity_mask * y_unf.view(*similarity.shape)
 
                 # Reshape for update computation
                 x_unf_reshaped = x_unf.reshape(-1, x_unf.size(-1))  # Shape: [batch_size*H*W, C*k*k]
                 y_unf_reshaped = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size*H*W, out_channels]
-
-                print(x_unf_reshaped.shape)
-                print(y_unf_reshaped.shape)
-                print(self.weight.shape)
-
                 # Compute x - w
                 weight_reshaped = self.weight.view(self.weight.size(0), -1)  # Shape: [out_channels, C*k*k]
-                print(weight_reshaped.shape)
                 x_minus_w = x_unf_reshaped.unsqueeze(1) - weight_reshaped.unsqueeze(0) # x_minus_w shape: [12544, 64, 75]
-                print(x_minus_w.shape)
-
                 # Compute weighted average
                 y_weighted = y_unf_reshaped / (y_unf_reshaped.sum(dim=0, keepdim=True) + 1e-6)
-                print(y_weighted.shape)
-
                 # Compute the update using bmm
                 update = torch.einsum('ijk,ij->jk', x_minus_w, y_weighted)
-                print(update.shape)  # Should be [64, 75]
                 update_reshape = update.reshape_as(self.weight)
-                print(update_reshape.shape)
                 # Add update to delta_w
                 self.delta_w += update_reshape
-                # Decay term calculation
-                # print("Shapes")
-                # print(x_unf.shape)
-                # print(self.weight.shape)
-                # if self.patchwise:
-                #     dec = y_unf.t().sum(1, keepdim=True) * self.weight.view(self.weight.size(0), -1)
-                #     self.delta_w += (y_unf.t().matmul(x_unf) - dec).view_as(self.weight)
-                # else:
-                #     krn = torch.eye(self.weight.size(1), device=x.device, dtype=x.dtype).view(self.weight.size(1), 1,
-                #                                                                               *self.kernel_size)
-                #     dec = torch.conv_transpose2d((y_unf.sum(1, keepdim=True).view_as(y)), krn, stride=self.stride)
-                #     dec_unf = F.unfold(dec, kernel_size=self.kernel_size, stride=self.stride).sum(dim=-1)
-                #     self.delta_w += (y_unf.t().matmul(x_unf) - dec_unf).view_as(self.weight)
 
-        if self.mode == self.MODE_LATERAL_INHIBITION:
-            with torch.no_grad():
+        if self.mode == self.MODE_BCM:
+            with torch.no_grad():  # Use no_grad to reduce memory usage
                 x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-                x_unf = x_unf.permute(0, 2, 1).reshape(-1, x_unf.size(1))
-                y_unf = y.permute(0, 2, 3, 1).reshape(-1, y.size(1))
-                # Hebbian update
-                hebbian_update = y_unf.t().matmul(x_unf).reshape_as(self.weight)
-                # Anti-Hebbian lateral inhibition
-                if self.lateral_inhibition_mode == 'filter':
-                    # Inhibition between neurons of the same filter
-                    inhibition = y_unf.t().matmul(y_unf)
-                    inhibition = inhibition - torch.diag(torch.diag(inhibition))  # Remove self-inhibition
-                    lateral_update = -self.lateral_inhibition_strength * inhibition.matmul(
-                        self.weight.view(self.out_channels, -1)).view_as(self.weight)
-                elif self.lateral_inhibition_mode == 'spatial':
-                    # Inhibition between different neurons looking at the same patch
-                    y_patch = y.permute(0, 2, 3, 1).reshape(-1, self.out_channels)
-                    inhibition = y_patch.t().matmul(y_patch)
-                    inhibition = inhibition - torch.diag(torch.diag(inhibition))  # Remove self-inhibition
-                    lateral_update = -self.lateral_inhibition_strength * inhibition.unsqueeze(-1).unsqueeze(-1) * self.weight
-                # Combine Hebbian and anti-Hebbian updates
-                self.delta_w += hebbian_update + lateral_update
-
+                x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
+                y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
+                x_unf_reshaped = x_unf.reshape(-1, x_unf.size(-1))  # Shape: [batch_size*H*W, C*k*k]
+                y_unf_reshaped = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size*H*W, out_channels]
+                weight_reshaped = self.weight.view(self.weight.size(0), -1)  # Shape: [out_channels, C*k*k]
+                # Compute x - w
+                x_minus_w = x_unf_reshaped.unsqueeze(1) - weight_reshaped.unsqueeze(0)  # Shape: [batch_size*H*W, out_channels, C*k*k]
+                # Update average activity for BCM
+                y_avg_new = y_unf_reshaped.mean(dim=0)  # Shape: [out_channels]
+                self.y_avg = self.y_avg + self.alpha_bcm * (y_avg_new - self.y_avg)
+                # Compute BCM learning rule
+                theta = (self.y_avg ** 2).unsqueeze(0)  # Shape: [1, out_channels]
+                y_bcm = y_unf_reshaped * (y_unf_reshaped - theta)  # Shape: [batch_size*H*W, out_channels]
+                # Compute the update using einsum
+                update = torch.einsum('ij,ik->jk', x_unf_reshaped, y_bcm)  # Shape: [C*k*k, out_channels]
+                update_reshape = update.t().reshape_as(self.weight)
+                self.delta_w += update_reshape
+                target_rate = 0.1
+                homeostatic_factor = torch.clamp(target_rate / (self.y_avg + 1e-6), 0.5, 2.0)
+                # Reshape homeostatic_factor to match self.delta_w
+                homeostatic_factor = homeostatic_factor.view(-1, 1, 1, 1)
+                # Apply homeostatic factor
+                self.delta_w *= homeostatic_factor
     @torch.no_grad()
     def local_update(self):
         """

@@ -46,8 +46,8 @@ class Net(nn.Module):
 		return out
 	
 	def forward_features(self, x):
-		x = self.bn1(torch.relu(self.conv1(x)))
-		x = self.pool(x)
+		x = self.pool(torch.relu(self.conv1(x)))
+		x = self.bn1(x)
 		return x
 	
 	def forward(self, x):

@@ -5,6 +5,7 @@ from hebb import HebbianConv2d
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.manifold import TSNE
+from tqdm import tqdm
 
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
@@ -12,21 +13,32 @@ default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 
 class Net(nn.Module):
 	def __init__(self, hebb_params=None):
 		super().__init__()
-		
+
 		if hebb_params is None: hebb_params = default_hebb_params
-		
+
 		# A single convolutional layer
-		self.conv1 = HebbianConv2d(3, 64, 5, 2, **hebb_params)
-		self.bn1 = nn.BatchNorm2d(64, affine=False)
-		
+		self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
+		self.bn1 = nn.BatchNorm2d(96, affine=False)
+
 		# Aggregation stage
-		self.pool = nn.AdaptiveAvgPool2d(1)
-		
+		self.avg_pool = nn.AdaptiveAvgPool2d(1)
+		self.pool = nn.MaxPool2d(2)
+
 		# Final fully-connected 2-layer classifier
 		hidden_shape = self.get_hidden_shape()
-		self.conv2 = HebbianConv2d(hidden_shape[0], 256, (hidden_shape[1], hidden_shape[2]), **hebb_params)
-		self.bn2 = nn.BatchNorm2d(256, affine=False)
-		self.fc3 = nn.Linear(256, 10)
+		self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params)
+		self.bn2 = nn.BatchNorm2d(128, affine=False)
+		self.fc3 = nn.Linear(128 * 12 * 12, 10)
+
+		self._initialize_weights()
+
+	def _initialize_weights(self):
+		# He initialization for convolutional layers
+		for m in self.modules():
+			if isinstance(m, nn.Conv2d):
+				nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+			elif isinstance(m, nn.Linear):
+				nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
 	
 	def get_hidden_shape(self):
 		self.eval()
@@ -41,23 +53,36 @@ class Net(nn.Module):
 	def forward(self, x):
 		x = self.forward_features(x)
 		x = self.bn2(torch.relu(self.conv2(x)))
-		x = self.fc3(torch.dropout(x.reshape(x.shape[0], x.shape[1]), p=0.5, train=self.training))
+		# print(x.shape)
+		x = x.view(x.size(0), -1)  # This reshapes the tensor to (batch_size, 128 * k * k)
+		x = self.fc3(x)
+		# x = self.fc3(torch.dropout(x.reshape(x.shape[0], x.shape[1]), p=0.1, train=self.training))
 		return x
+
+	def forward_hebbian(self, x):
+		x = self.forward_features(x)
+		x = self.bn2(torch.relu(self.conv2(x)))
+		return x
+
+	def hebbian_train(self, dataloader, device):
+		self.train()
+		for inputs, _ in tqdm(dataloader, ncols=80):
+			inputs = inputs.to(device)
+			_ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
+			for layer in [self.conv1, self.conv2]:
+				if isinstance(layer, HebbianConv2d):
+					layer.local_update()
 
 	def plot_grid(self, tensor, path, num_rows=3, num_cols=4, layer_name=""):
 		# Ensure we're working with the first 12 filters (or less if there are fewer)
 		tensor = tensor[:12]
-
 		# Normalize the tensor
 		# tensor = torch.sigmoid((tensor - tensor.mean()) / tensor.std())
 		tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
-
 		# Move to CPU and convert to numpy
 		tensor = tensor.cpu().detach().numpy()
-
 		fig, axes = plt.subplots(num_rows, num_cols, figsize=(15, 10))
 		fig.suptitle(f'First 12 Filters of {layer_name}')
-
 		for i, ax in enumerate(axes.flat):
 			if i < tensor.shape[0]:
 				filter_img = tensor[i]

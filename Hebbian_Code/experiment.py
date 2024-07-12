@@ -16,6 +16,20 @@ import utils
 import params as P
 
 
+def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
+    model.train()
+    for inputs, _ in tqdm(train_loader, ncols=80):
+        inputs = inputs.to(device)
+        if zca is not None:
+            inputs = data.whiten(inputs, zca)
+
+        optimizer.zero_grad()
+        outputs = model(inputs)  # Forward pass through the entire network
+        for layer in [model.conv1, model.conv2]:
+            if hasattr(layer, 'local_update'):
+                layer.local_update()
+        optimizer.step()
+
 def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboard, epoch):
     model.train()
     epoch_loss, epoch_hits, count = 0, 0, 0
@@ -90,8 +104,33 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     model = Net(hebb_params)
     model.to(device=device)
 
+    # Hebbian training
+    print("Starting Hebbian training...")
+    # Optimizer only for the Hebbian layers
+    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
+    hebb_optimizer = optim.SGD(hebb_params, lr=lr)  # Dummy optimizer for Hebbian updates
+    for epoch in range(2):
+        hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
+        print(f"Completed Hebbian training epoch {epoch + 1}/{2}")
+        model.eval()
+        print("Visualizing Filters")
+        model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+        model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+
+    # Freeze Hebbian layers
+    for param in model.conv1.parameters():
+        param.requires_grad = False
+    for param in model.conv2.parameters():
+        param.requires_grad = False
+
+    print("Visualizing Class separation")
+    model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
+
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
+    # Should only Train Classifier
+    optimizer = optim.SGD(model.fc3.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
+    # Can train whole model
+    # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
     scheduler = sched.MultiStepLR(optimizer, milestones=sched_milestones, gamma=sched_gamma)
 
     results = {'trn_loss': {}, 'trn_acc': {}, 'tst_loss': {}, 'tst_acc': {}}
@@ -99,8 +138,9 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     weight_dist, weight_update_dist, grad_dist = {}, {}, {}
     best_epoch, best_result = None, None
     if os.path.exists('tboard/{}'.format(exp_name)): shutil.rmtree('tboard/{}'.format(exp_name))
-    # tboard = SummaryWriter('tboard/{}'.format(exp_name), purge_step=0)
     tboard = SummaryWriter('tboard/{}'.format(exp_name))
+
+    print("Training Classifier")
     for epoch in range(1, epochs + 1):
         t0 = time()
         print("\nEPOCH {}/{} | {}".format(epoch, epochs, exp_name))
@@ -108,7 +148,6 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         # Training phase
         model.train()
         weights, weight_updates, grads = {n: copy.deepcopy(p) for n, p in model.named_parameters()}, {}, {}
-        print("Training...")
         trn_loss, trn_acc, grads = train_one_epoch(model, criterion, optimizer, trn_set, device, zca, tboard, epoch)
         tboard.add_scalar("Loss/train", trn_loss, epoch)
         tboard.add_scalar("Accuracy/train", trn_acc, epoch)
@@ -137,8 +176,6 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         print("Visualizing Filters")
         model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-        # print("Visualizing Class separation")
-        # model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
         tboard.add_scalar("Loss/test", trn_loss, epoch)
         tboard.add_scalar("Accuracy/test", trn_acc, epoch)
 

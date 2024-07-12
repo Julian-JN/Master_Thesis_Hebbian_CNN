@@ -7,14 +7,14 @@ from experiment import run
 
 DATASET = 'cifar10'
 WHITEN_LVL = None
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 EPOCHS = 10
 LR = 1e-3
 MOMENTUM = 0.9
 WDECAY=5e-4
 SCHED_MILESTONES = range(30, 50, 2)
 SCHED_GAMMA = 1
-HEBB_PARAMS = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 50, 'alpha': 1.}
+HEBB_PARAMS = {'mode': 'wta', 'w_nrm': True, 'bias': True, 'act': nn.Identity(), 'k': 50, 'alpha': 1.}
 # HEBB_PARAMS = {'mode': 'hpca', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
 
 

@@ -161,9 +161,25 @@ class HebbianConv2d(nn.Module):
         if self.mode == self.MODE_BASIC_HEBBIAN:
             with torch.no_grad():
                 x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-                x_unf = x_unf.permute(0, 2, 1).reshape(-1, x_unf.size(1))
-                y_unf = y.permute(0, 2, 3, 1).reshape(-1, y.size(1))
-                self.delta_w += y_unf.t().matmul(x_unf).reshape_as(self.weight)
+                x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
+                y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
+                batch_size, hw, in_features = x_unf.shape
+                _, h, w, out_channels = y_unf.shape
+                # Reshape y_unf
+                y_unf = y_unf.reshape(batch_size * hw, out_channels)
+                # Compute normalization factor
+                y_sum = y_unf.sum(dim=0, keepdim=True)
+                y_sum[y_sum == 0] = 1.0  # Avoid division by zero
+                # Normalize y
+                y_normalized = y_unf / y_sum
+                # Compute the update using Grossberg's Instar Rule
+                weight = self.weight.view(out_channels, -1)  # Shape: [out_channels, C*k*k]
+                # Compute x_avg (average input for each output channel)
+                x_avg = torch.mm(y_normalized.t(), x_unf.reshape(-1, in_features))
+                # Compute the update
+                update = x_avg - weight
+                # Reshape the update to match the weight shape
+                self.delta_w += update.reshape_as(self.weight)
 
         if self.mode == self.MODE_WTA:
             with torch.no_grad():
@@ -172,52 +188,47 @@ class HebbianConv2d(nn.Module):
                 x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
                 y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
 
-                if self.wta_competition == 'filter':
-                    topk_values, _ = y_unf.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                    y_unf = (y_unf >= topk_values[..., -1, None]).float() * y_unf
-                elif self.wta_competition == 'spatial':
-                    y_unf_flat = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size * H * W, out_channels]
-                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
-                    topk_values = topk_values[-1, :]  # Keep only the k-th largest value for each channel
-                    y_unf = (y_unf >= topk_values).float() * y_unf
-                elif self.wta_competition == 'combined':
-                    topk_values_filter, _ = y_unf.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                    topk_values_filter = topk_values_filter[..., -1, None]
-                    y_unf_flat = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size * H * W, out_channels]
-                    topk_values_spatial, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
-                    topk_values_spatial = topk_values_spatial[-1,
-                                          :]  # Keep only the k-th largest value for each channel
-                    y_unf = ((y_unf >= topk_values_filter) | (y_unf >= topk_values_spatial)).float() * y_unf
+                batch_size, hw, in_features = x_unf.shape
+                _, h, w, out_channels = y_unf.shape
 
-                elif self.wta_competition == 'similarity_filter' or self.wta_competition == 'similarity_spatial':
-                    # Compute similarity between weights and inputs
-                    weight_unf = self.weight.view(self.weight.size(0), -1)
-                    similarity = torch.matmul(x_unf, weight_unf.t())
+                y_unf_flat = y_unf.reshape(batch_size * hw, out_channels)
+
+                if self.wta_competition == 'filter':
+                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    y_mask = (y_unf_flat >= topk_values[..., -1, None]).float()
+                elif self.wta_competition == 'spatial':
+                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    y_mask = (y_unf_flat >= topk_values[-1, :]).float()
+                elif self.wta_competition == 'combined':
+                    topk_filter, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    topk_spatial, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    y_mask = ((y_unf_flat >= topk_filter[..., -1, None]) | (y_unf_flat >= topk_spatial[-1, :])).float()
+                elif self.wta_competition in ['similarity_filter', 'similarity_spatial']:
+                    weight_unf = self.weight.view(out_channels, -1)
+                    similarity = torch.matmul(x_unf.reshape(-1, in_features), weight_unf.t())
                     if self.wta_competition == 'similarity_filter':
                         topk_similarity, _ = similarity.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                        topk_similarity = topk_similarity[..., -1, None]
+                        y_mask = (similarity >= topk_similarity[..., -1, None]).float()
                     else:  # similarity_spatial
-                        similarity_flat = similarity.reshape(-1, similarity.size(-1))
-                        topk_similarity, _ = similarity_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
-                        topk_similarity = topk_similarity[-1, :]
-                    similarity_mask = (similarity >= topk_similarity).float()
-                    y_unf = similarity_mask * y_unf.view(*similarity.shape)
-                    y_unf = similarity_mask * y_unf.view(*similarity.shape)
+                        topk_similarity, _ = similarity.topk(self.top_k, dim=0, largest=True, sorted=False)
+                        y_mask = (similarity >= topk_similarity[-1, :]).float()
+                else:
+                    raise ValueError(f"Unknown WTA competition mode: {self.wta_competition}")
 
-                # Reshape for update computation
-                x_unf_reshaped = x_unf.reshape(-1, x_unf.size(-1))  # Shape: [batch_size*H*W, C*k*k]
-                y_unf_reshaped = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size*H*W, out_channels]
-                # Compute x - w
-                weight_reshaped = self.weight.view(self.weight.size(0), -1)  # Shape: [out_channels, C*k*k]
-                x_minus_w = x_unf_reshaped.unsqueeze(1) - weight_reshaped.unsqueeze(
-                    0)  # x_minus_w shape: [12544, 64, 75]
-                # Compute weighted average
-                y_weighted = y_unf_reshaped / (y_unf_reshaped.sum(dim=0, keepdim=True) + 1e-6)
-                # Compute the update using bmm
-                update = torch.einsum('ijk,ij->jk', x_minus_w, y_weighted)
-                update_reshape = update.reshape_as(self.weight)
-                # Add update to delta_w
-                self.delta_w += update_reshape
+                # Apply mask and normalize
+                y_masked = y_unf_flat * y_mask
+                y_sum = y_masked.sum(dim=0, keepdim=True)
+                y_sum[y_sum == 0] = 1.0  # Avoid division by zero
+                y_normalized = y_masked / y_sum
+
+                # Compute x_avg (average input for each output channel)
+                x_avg = torch.mm(y_normalized.t(), x_unf.reshape(-1, in_features))
+
+                # Compute the update
+                update = x_avg - self.weight.view(out_channels, -1)
+
+                # Reshape the update to match the weight shape
+                self.delta_w += update.reshape_as(self.weight)
 
         if self.mode == self.MODE_BCM:
             with torch.no_grad():  # Use no_grad to reduce memory usage

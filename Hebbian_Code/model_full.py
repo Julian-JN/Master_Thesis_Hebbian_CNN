@@ -10,22 +10,7 @@ from tqdm import tqdm
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
 
-
-class Triangle(nn.Module):
-    def __init__(self, power: float = 0.7, inplace: bool = False, eps: float = 1e-6):
-        super(Triangle, self).__init__()
-        self.inplace = inplace
-        self.power = power
-        self.eps = eps
-
-    def forward(self, input: torch.Tensor) -> torch.Tensor:
-        centered = input - torch.mean(input, dim=1, keepdim=True)
-        positive = F.relu(centered, inplace=self.inplace)
-        negative = F.relu(-centered, inplace=self.inplace)
-        result = torch.abs(positive - negative + self.eps) ** self.power
-        return result * torch.sign(positive - negative)
-
-class Net(nn.Module):
+class Net_Full(nn.Module):
     def __init__(self, hebb_params=None):
         super().__init__()
 
@@ -34,16 +19,23 @@ class Net(nn.Module):
         # A single convolutional layer
         self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
         self.bn1 = nn.BatchNorm2d(96, affine=False)
-
         # Aggregation stage
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.pool = nn.MaxPool2d(2)
-
-        # Final fully-connected 2-layer classifier
+        # Test to see if first layer works
         hidden_shape = self.get_hidden_shape()
+        # Conv layer
         self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params)
         self.bn2 = nn.BatchNorm2d(128, affine=False)
-        self.fc1 = nn.Linear(128 * 12 * 12, 300)
+        # Conv layer
+        self.conv3 = HebbianConv2d(128, 192, 3, 1, **hebb_params)
+        self.bn3 = nn.BatchNorm2d(192, affine=False)
+        # Conv layer
+        self.conv4 = HebbianConv2d(192, 256, 3, 1, **hebb_params)
+        self.bn4 = nn.BatchNorm2d(256, affine=False)
+        # Final fully-connected 2-layer classifier
+        self.fc1 = nn.Linear(256 * 12 * 12, 300)
+        # self.bn5 = nn.BatchNorm2d(300, affine=False)
         self.fc2 = nn.Linear(300, 10)
 
         self._initialize_weights()
@@ -69,76 +61,20 @@ class Net(nn.Module):
     def forward(self, x):
         x = self.forward_features(x)
         x = self.bn2(torch.relu(self.conv2(x)))
+        x = self.bn3(self.pool(torch.relu(self.conv3(x))))
+        x = self.bn4(torch.relu(self.conv4(x)))
         x = x.reshape(x.size(0), -1)
-        x = self.fc3(x)
-        x = self.fc4(x)
+        x = self.fc1(x)
+        x = self.fc2(x)
         # x = self.fc3(torch.dropout(x.reshape(x.shape[0], x.shape[1]), p=0.1, train=self.training))
         return x
 
     def forward_hebbian(self, x):
         x = self.forward_features(x)
         x = self.bn2(torch.relu(self.conv2(x)))
+        x = self.bn3(self.pool(torch.relu(self.conv3(x))))
+        x = self.bn4(torch.relu(self.conv4(x)))
         return x
-
-# class Net(nn.Module):
-#     def __init__(self, hebb_params=None):
-#         super().__init__()
-#
-#         if hebb_params is None: hebb_params = default_hebb_params
-#
-#         # A single convolutional layer
-#         self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
-#         self.bn1 = nn.BatchNorm2d(3, affine=False)
-#
-#         # Aggregation stage
-#         self.avg_pool = nn.AdaptiveAvgPool2d(1)
-#         self.pool = nn.MaxPool2d(2)
-#
-#         # Final fully-connected 2-layer classifier
-#         hidden_shape = self.get_hidden_shape()
-#         self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params)
-#         self.bn2 = nn.BatchNorm2d(96, affine=False)
-#         self.fc3 = nn.Linear(128 * 12 * 12, 300)
-#         self.fc4 = nn.Linear(300, 10)
-#
-#         self._initialize_weights()
-#
-#     def _initialize_weights(self):
-#         # He initialization for convolutional layers
-#         for m in self.modules():
-#             if isinstance(m, nn.Conv2d):
-#                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-#             elif isinstance(m, nn.Linear):
-#                 nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-#
-#     def get_hidden_shape(self):
-#         self.eval()
-#         with torch.no_grad(): out = self.forward_features(torch.ones([1, 3, 32, 32], dtype=torch.float32)).shape[1:]
-#         return out
-#
-#     def forward_features(self, x):
-#         x = self.bn1(x)
-#         x = self.conv1(x)
-#         x = Triangle(power=0.7)(x)
-#         x = self.pool(x)
-#         return x
-#
-#     def forward(self, x):
-#         x = self.forward_features(x)
-#         x = self.bn2(x)
-#         x = self.conv2(x)
-#         x = Triangle(power=1.4)(x)
-#         x = x.reshape(x.size(0), -1)
-#         x = self.fc3(x)
-#         x = self.fc4(x)
-#         return x
-#
-#     def forward_hebbian(self, x):
-#         x = self.forward_features(x)
-#         x = self.bn2(x)
-#         x = self.conv2(x)
-#         x = Triangle(power=1.4)(x)
-#         return x
 
     def hebbian_train(self, dataloader, device):
         self.train()

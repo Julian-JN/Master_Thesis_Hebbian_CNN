@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import data
 from model import Net
+from model_full import Net_Full
 import utils
 import params as P
 
@@ -20,8 +21,8 @@ def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
     model.train()
     for inputs, _ in tqdm(train_loader, ncols=80):
         inputs = inputs.to(device)
-        if zca is not None:
-            inputs = data.whiten(inputs, zca)
+        # if zca is not None:
+        #     inputs = data.whiten(inputs, zca)
 
         optimizer.zero_grad()
         outputs = model(inputs)  # Forward pass through the entire network
@@ -36,8 +37,8 @@ def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboa
     grads = {}
     for inputs, labels in tqdm(train_loader, ncols=80):
         inputs, labels = inputs.to(device), labels.to(device)
-        if zca is not None:
-            inputs = data.whiten(inputs, zca)
+        # if zca is not None:
+        #     inputs = data.whiten(inputs, zca)
 
         outputs = model(inputs)
         loss = criterion(outputs, labels)
@@ -72,8 +73,8 @@ def test_one_epoch(model, criterion, test_loader, device, zca, tboard, epoch):
     with torch.no_grad():
         for inputs, labels in tqdm(test_loader, ncols=80):
             inputs, labels = inputs.to(device), labels.to(device)
-            if zca is not None:
-                inputs = data.whiten(inputs, zca)
+            # if zca is not None:
+            #     inputs = data.whiten(inputs, zca)
 
             outputs = model(inputs)
             loss = criterion(outputs, labels)
@@ -101,35 +102,43 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     trn_set, tst_set, zca = data.get_data(dataset=dataset, root='datasets', batch_size=batch_size,
                                           whiten_lvl=whiten_lvl)
 
-    model = Net(hebb_params)
+    model = Net_Full(hebb_params)
     model.to(device=device)
 
     # Hebbian training
     print("Starting Hebbian training...")
     # Optimizer only for the Hebbian layers
-    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
-    hebb_optimizer = optim.SGD(hebb_params, lr=lr)  # Dummy optimizer for Hebbian updates
+    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
+    hebb_optimizer = optim.SGD(hebb_params, lr=0.1)  # Dummy optimizer for Hebbian updates
     for epoch in range(2):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
-        print(f"Completed Hebbian training epoch {epoch + 1}/{2}")
+        print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
         model.eval()
         print("Visualizing Filters")
         model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+        model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+        model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
 
     # Freeze Hebbian layers
     for param in model.conv1.parameters():
         param.requires_grad = False
     for param in model.conv2.parameters():
         param.requires_grad = False
+    for param in model.conv3.parameters():
+        param.requires_grad = False
+    for param in model.conv4.parameters():
+        param.requires_grad = False
 
-    print("Visualizing Class separation")
-    model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
+    # print("Visualizing Class separation")
+    # model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
 
     criterion = nn.CrossEntropyLoss()
     # Should only Train Classifier
-    optimizer = optim.SGD(model.fc3.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
-    # Can train whole model
+    class_params = list(model.fc1.parameters()) + list(model.fc2.parameters())
+    # class_params = list(model.fc3.parameters())
+    optimizer = optim.SGD(class_params, lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
+    # Can train whole modelm
     # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
     scheduler = sched.MultiStepLR(optimizer, milestones=sched_milestones, gamma=sched_gamma)
 
@@ -173,9 +182,9 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         results['tst_loss'][epoch], results['tst_acc'][epoch] = tst_loss, tst_acc
         print("Test loss: {}, accuracy: {}".format(tst_loss, tst_acc))
         # Visualization
-        print("Visualizing Filters")
-        model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+        # print("Visualizing Filters")
+        # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+        # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
         tboard.add_scalar("Loss/test", trn_loss, epoch)
         tboard.add_scalar("Accuracy/test", trn_acc, epoch)
 
@@ -188,30 +197,31 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
             utils.save_dict(copy.deepcopy(model).state_dict(), 'results/{}/best.pt'.format(exp_name))
 
         # Save results
-        print("Saving results...")
-        utils.update_csv(results, 'results/{}/results.csv'.format(exp_name))
-        utils.update_csv(weight_stats, 'results/{}/weight_stats.csv'.format(exp_name))
-        utils.update_csv(weight_update_stats, 'results/{}/weight_update_stats.csv'.format(exp_name))
-        utils.update_csv(grad_stats, 'results/{}/grad_stats.csv'.format(exp_name))
-        utils.update_csv(weight_dist, 'results/{}/weight_dist.csv'.format(exp_name))
-        utils.update_csv(weight_dist, 'results/{}/weight_update_dist.csv'.format(exp_name))
-        utils.update_csv(grad_dist, 'results/{}/grad_dist.csv'.format(exp_name))
-        utils.save_plot({"Train": results['trn_loss'], "Test": results['tst_loss']},
-                        'results/{}/figures/loss.png'.format(exp_name), xlabel="Epoch", ylabel="Loss")
-        utils.save_plot({"Train": results['trn_acc'], "Test": results['tst_acc']},
-                        'results/{}/figures/accuracy.png'.format(exp_name), xlabel="Epoch", ylabel="Accuracy")
-        utils.save_grid_plot(weight_stats, 'results/{}/figures/weight_stats.png'.format(exp_name), rows=2,
-                             cols=(len(weight_stats) + 1) // 2, ylabel="Weight Value")
-        utils.save_grid_plot(weight_update_stats, 'results/{}/figures/weight_update_stats.png'.format(exp_name), rows=2,
-                             cols=(len(weight_update_stats) + 1) // 2, ylabel="Weight Update")
-        utils.save_grid_plot(grad_stats, 'results/{}/figures/grad_stats.png'.format(exp_name), rows=2,
-                             cols=(len(grad_stats) + 1) // 2, ylabel="Grad. Value")
-        utils.save_grid_dist(weight_dist, 'results/{}/figures/weight_dist.png'.format(exp_name), rows=2,
-                             cols=(len(weight_dist) + 1) // 2, bins=P.DIST_BINS)
-        utils.save_grid_dist(weight_update_dist, 'results/{}/figures/weight_update_dist.png'.format(exp_name), rows=2,
-                             cols=(len(weight_update_dist) + 1) // 2, bins=P.DIST_BINS)
-        utils.save_grid_dist(grad_dist, 'results/{}/figures/grad_dist.png'.format(exp_name), rows=2,
-                             cols=(len(grad_dist) + 1) // 2, bins=P.DIST_BINS)
+        # print("Saving results...")
+        # utils.update_csv(results, 'results/{}/results.csv'.format(exp_name))
+        # utils.update_csv(weight_stats, 'results/{}/weight_stats.csv'.format(exp_name))
+        # utils.update_csv(weight_update_stats, 'results/{}/weight_update_stats.csv'.format(exp_name))
+        # utils.update_csv(grad_stats, 'results/{}/grad_stats.csv'.format(exp_name))
+        # utils.update_csv(weight_dist, 'results/{}/weight_dist.csv'.format(exp_name))
+        # utils.update_csv(weight_dist, 'results/{}/weight_update_dist.csv'.format(exp_name))
+        # utils.update_csv(grad_dist, 'results/{}/grad_dist.csv'.format(exp_name))
+        # print("Saving plots")
+        # utils.save_plot({"Train": results['trn_loss'], "Test": results['tst_loss']},
+        #                 'results/{}/figures/loss.png'.format(exp_name), xlabel="Epoch", ylabel="Loss")
+        # utils.save_plot({"Train": results['trn_acc'], "Test": results['tst_acc']},
+        #                 'results/{}/figures/accuracy.png'.format(exp_name), xlabel="Epoch", ylabel="Accuracy")
+        # utils.save_grid_plot(weight_stats, 'results/{}/figures/weight_stats.png'.format(exp_name), rows=2,
+        #                      cols=(len(weight_stats) + 1) // 2, ylabel="Weight Value")
+        # utils.save_grid_plot(weight_update_stats, 'results/{}/figures/weight_update_stats.png'.format(exp_name), rows=2,
+        #                      cols=(len(weight_update_stats) + 1) // 2, ylabel="Weight Update")
+        # utils.save_grid_plot(grad_stats, 'results/{}/figures/grad_stats.png'.format(exp_name), rows=2,
+        #                      cols=(len(grad_stats) + 1) // 2, ylabel="Grad. Value")
+        # utils.save_grid_dist(weight_dist, 'results/{}/figures/weight_dist.png'.format(exp_name), rows=2,
+        #                      cols=(len(weight_dist) + 1) // 2, bins=P.DIST_BINS)
+        # utils.save_grid_dist(weight_update_dist, 'results/{}/figures/weight_update_dist.png'.format(exp_name), rows=2,
+        #                      cols=(len(weight_update_dist) + 1) // 2, bins=P.DIST_BINS)
+        # utils.save_grid_dist(grad_dist, 'results/{}/figures/grad_dist.png'.format(exp_name), rows=2,
+        #                      cols=(len(grad_dist) + 1) // 2, bins=P.DIST_BINS)
         tboard.flush()
         utils.save_dict(model.state_dict(), 'results/{}/last.pt'.format(exp_name))
 

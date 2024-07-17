@@ -30,7 +30,7 @@ class HebbianConv2d(nn.Module):
                  mode=MODE_BASIC_HEBBIAN, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=0., wta_competition='similarity_filter',
                  lateral_competition="filter",
-                 lateral_inhibition_strength=0.1, top_k=3):
+                 lateral_inhibition_strength=0.01, top_k=1):
         """
 
 		:param out_channels: output channels of the convolutional kernel
@@ -62,6 +62,7 @@ class HebbianConv2d(nn.Module):
         self.w_nrm = w_nrm
         self.bias = nn.Parameter(torch.zeros(self.out_channels), requires_grad=bias)
         self.act = act
+        # self.act = self.cos_sim2d
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
         self.k = k
@@ -75,19 +76,63 @@ class HebbianConv2d(nn.Module):
         self.alpha = alpha
         self.wta_competition = wta_competition
         self.lateral_inhibition_mode = lateral_competition
-        self.lateral_inhibition_strength = lateral_inhibition_strength
+        self.lateral_learning_rate = lateral_inhibition_strength  # Adjust as needed
+
+    def cos_sim2d(self, x):
+        # print(x.shape)
+        # print(w.shape)
+        # Unfold the input
+        w = self.weight
+        x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
+        # x_unf shape: [batch_size, C*k*k, H*W]
+
+        batch_size, channels_x_kernel, hw = x_unf.shape
+        out_channels, _, kernel_h, kernel_w = w.shape
+
+        # Reshape weights
+        w_reshaped = w.view(out_channels, -1)  # Shape: [out_channels, C*k*k]
+
+        # Reshape x_unf for batch matrix multiplication
+        x_unf = x_unf.transpose(1, 2).reshape(batch_size * hw, channels_x_kernel)
+
+        # Compute dot product
+        dot_product = torch.matmul(x_unf, w_reshaped.t())  # Shape: [batch_size*H*W, out_channels]
+
+        # Compute norms
+        norm_x = torch.norm(x_unf, p=2, dim=1, keepdim=True)  # Shape: [batch_size*H*W, 1]
+        norm_w = torch.norm(w_reshaped, p=2, dim=1, keepdim=True)  # Shape: [out_channels, 1]
+
+        # Avoid division by zero
+        norm_x[norm_x == 0] = 1e-8
+        norm_w[norm_w == 0] = 1e-8
+
+        # Compute cosine similarity
+        cosine_similarity = dot_product / (norm_x * norm_w.t())
+
+        # Reshape to match the original output shape
+        out_shape = (batch_size,
+                     (x.size(2) - self.kernel_size[0]) // self.stride[0] + 1,
+                     (x.size(3) - self.kernel_size[1]) // self.stride[1] + 1,
+                     out_channels)
+        cosine_similarity = cosine_similarity.view(*out_shape)
+
+        # Permute to get [batch_size, out_channels, H, W]
+        cosine_similarity = cosine_similarity.permute(0, 3, 1, 2)
+
+        return cosine_similarity
 
     def apply_weights(self, x, w):
         """
 		This function provides the logic for combining input x and weight w
 		"""
-
         return torch.conv2d(x, w, bias=self.bias, stride=self.stride)
 
     def compute_activation(self, x):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         y = self.act(self.apply_weights(x, w))
+        # For cosine similarity activation
+        # y = self.act(x)
         return y
 
     def forward(self, x):
@@ -187,10 +232,8 @@ class HebbianConv2d(nn.Module):
                 x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
                 x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
                 y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
-
                 batch_size, hw, in_features = x_unf.shape
                 _, h, w, out_channels = y_unf.shape
-
                 y_unf_flat = y_unf.reshape(batch_size * hw, out_channels)
 
                 if self.wta_competition == 'filter':
@@ -205,7 +248,12 @@ class HebbianConv2d(nn.Module):
                     y_mask = ((y_unf_flat >= topk_filter[..., -1, None]) | (y_unf_flat >= topk_spatial[-1, :])).float()
                 elif self.wta_competition in ['similarity_filter', 'similarity_spatial']:
                     weight_unf = self.weight.view(out_channels, -1)
-                    similarity = torch.matmul(x_unf.reshape(-1, in_features), weight_unf.t())
+                    similarity_cos = self.cos_sim2d(x)
+                    similarity = similarity_cos.permute(0, 2, 3, 1).reshape(-1, self.out_channels)
+
+                    # print("Similarity")
+                    # print(similarity.shape)
+                    # similarity = torch.matmul(x_unf.reshape(-1, in_features), weight_unf.t())
                     if self.wta_competition == 'similarity_filter':
                         topk_similarity, _ = similarity.topk(self.top_k, dim=-1, largest=True, sorted=False)
                         y_mask = (similarity >= topk_similarity[..., -1, None]).float()
@@ -217,40 +265,102 @@ class HebbianConv2d(nn.Module):
 
                 # Apply mask and normalize
                 y_masked = y_unf_flat * y_mask
+                # Global layer Normalization
                 y_sum = y_masked.sum(dim=0, keepdim=True)
                 y_sum[y_sum == 0] = 1.0  # Avoid division by zero
                 y_normalized = y_masked / y_sum
-
-                # Compute x_avg (average input for each output channel)
-                x_avg = torch.mm(y_normalized.t(), x_unf.reshape(-1, in_features))
-
-                # Compute the update
-                update = x_avg - self.weight.view(out_channels, -1)
-
+                # Local Normalization
+                # self.y_avg = self.y_avg * 0.9 + y_masked.mean(dim=0) * 0.1  # Exponential moving average
+                # y_local_norm = y_masked / (self.y_avg + 1e-5)  # Add small epsilon to prevent division by zero
+                # Initialize lateral weights if they don't exist
+                y_inhibited = self.combined_lateral_inhibition(y_normalized, out_channels, hw)
+                # Compute x_avg using inhibited activations
+                x_avg = torch.mm(y_inhibited.t(), x_unf.reshape(-1, in_features))
+                # Mask for winning neurons only
+                winner_mask = (y_sum > 0).float().view(self.out_channels, 1)
+                # Compute the update: Apply the winner_mask to ensure non-winners do not update their weights
+                update = winner_mask * (x_avg - self.weight.view(self.out_channels, -1))
                 # Reshape the update to match the weight shape
                 self.delta_w += update.reshape_as(self.weight)
 
         if self.mode == self.MODE_BCM:
-            with torch.no_grad():  # Use no_grad to reduce memory usage
+            with torch.no_grad():
                 x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
                 x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
                 y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
-                x_unf_reshaped = x_unf.reshape(-1, x_unf.size(-1))  # Shape: [batch_size*H*W, C*k*k]
-                y_unf_reshaped = y_unf.reshape(-1, y_unf.size(-1))  # Shape: [batch_size*H*W, out_channels]
-                weight_reshaped = self.weight.view(self.weight.size(0), -1)  # Shape: [out_channels, C*k*k]
-                # Compute x - w
-                x_minus_w = x_unf_reshaped.unsqueeze(1) - weight_reshaped.unsqueeze(
-                    0)  # Shape: [batch_size*H*W, out_channels, C*k*k]
+
+                batch_size, hw, in_features = x_unf.shape
+                _, h, w, out_channels = y_unf.shape
+                y_unf_flat = y_unf.reshape(batch_size * hw, out_channels)
                 # Update average activity for BCM
-                y_avg_new = y_unf_reshaped.mean(dim=0)  # Shape: [out_channels]
+                y_avg_new = y_unf_flat.mean(dim=0)  # Shape: [out_channels]
                 self.y_avg = self.y_avg + self.alpha_bcm * (y_avg_new - self.y_avg)
                 # Compute BCM learning rule
-                theta = (self.y_avg ** 2).unsqueeze(0)  # Shape: [1, out_channels]
-                y_bcm = y_unf_reshaped * (y_unf_reshaped - theta)  # Shape: [batch_size*H*W, out_channels]
-                # Compute the update using einsum
-                update = torch.einsum('ij,ik->jk', x_unf_reshaped, y_bcm)  # Shape: [C*k*k, out_channels]
-                update_reshape = update.t().reshape_as(self.weight)
-                self.delta_w += update_reshape
+                theta = self.y_avg ** 2  # Shape: [out_channels]
+                y_bcm = y_unf_flat * (y_unf_flat - theta)  # Shape: [batch_size*H*W, out_channels]
+                # Normalize y_bcm
+                y_sum = y_bcm.sum(dim=0, keepdim=True)
+                y_sum[y_sum == 0] = 1.0  # Avoid division by zero
+                y_normalized = y_bcm / y_sum
+                y_inhibited = self.combined_lateral_inhibition(y_normalized, out_channels, hw)
+                # Compute x_avg (average input for each output channel)
+                x_avg = torch.mm(y_inhibited.t(), x_unf.reshape(-1, in_features))
+                # Compute the update
+                update = x_avg - self.weight.view(out_channels, -1)
+                # Reshape the update to match the weight shape
+                self.delta_w += update.reshape_as(self.weight)
+
+    def lateral_inhibition_within_filter(self, y_normalized, out_channels, hw):
+        # y_normalized shape is [50176, 96], so hw = 50176 and out_channels = 96
+        y_reshaped = y_normalized.t()  # Shape: [96, 50176]
+
+        # Compute coactivation within each filter
+        coactivation = torch.mm(y_reshaped, y_reshaped.t())  # Shape: [96, 96]
+
+        # Update lateral weights
+        if not hasattr(self, 'lateral_weights_filter'):
+            self.lateral_weights_filter = torch.zeros_like(coactivation)
+
+        lateral_update = self.lateral_learning_rate * (coactivation - self.lateral_weights_filter)
+        self.lateral_weights_filter += lateral_update
+
+        # Apply inhibition
+        inhibition = torch.mm(self.lateral_weights_filter, y_reshaped)
+        y_inhibited = F.relu(y_reshaped - inhibition)
+
+        return y_inhibited.t()  # Shape: [50176, 96]
+
+    def lateral_inhibition_same_patch(self, y_normalized, out_channels, hw):
+        # y_normalized shape is already [hw, out_channels] = [50176, 96]
+        y_reshaped = y_normalized
+
+        # Compute coactivation for neurons looking at the same patch
+        coactivation = torch.mm(y_reshaped.t(), y_reshaped)  # Shape: [96, 96]
+
+        # Update lateral weights
+        if not hasattr(self, 'lateral_weights_patch'):
+            self.lateral_weights_patch = torch.zeros_like(coactivation)
+
+        lateral_update = self.lateral_learning_rate * (coactivation - self.lateral_weights_patch)
+        self.lateral_weights_patch += lateral_update
+
+        # Apply inhibition
+        inhibition = torch.mm(y_reshaped, self.lateral_weights_patch)
+        y_inhibited = F.relu(y_reshaped - inhibition)
+
+        return y_inhibited  # Shape: [50176, 96]
+
+    def combined_lateral_inhibition(self, y_normalized, out_channels, hw):
+        # Apply inhibition within filter
+        y_inhibited_filter = self.lateral_inhibition_within_filter(y_normalized, out_channels, hw)
+
+        # Apply inhibition for same patch
+        y_inhibited_patch = self.lateral_inhibition_same_patch(y_normalized, out_channels, hw)
+
+        # Combine the inhibitions (you can adjust the weighting as needed)
+        y_inhibited = 0.5 * y_inhibited_filter + 0.5 * y_inhibited_patch
+
+        return y_inhibited  # Shape: [50176, 96]
 
     @torch.no_grad()
     def local_update(self):

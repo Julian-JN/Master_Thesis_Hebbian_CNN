@@ -12,24 +12,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 import data
 from model import Net
+from Model_BackProp import Net_BP
 from model_full import Net_Full
 import utils
 import params as P
 
-
-def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
-    model.train()
-    for inputs, _ in tqdm(train_loader, ncols=80):
-        inputs = inputs.to(device)
-        # if zca is not None:
-        #     inputs = data.whiten(inputs, zca)
-
-        optimizer.zero_grad()
-        outputs = model(inputs)  # Forward pass through the entire network
-        for layer in [model.conv1, model.conv2]:
-            if hasattr(layer, 'local_update'):
-                layer.local_update()
-        optimizer.step()
 
 def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboard, epoch):
     model.train()
@@ -48,9 +35,6 @@ def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboa
 
         optimizer.zero_grad()
         loss.backward()
-        for m in model.modules():
-            if hasattr(m, 'local_update'):
-                m.local_update()
         optimizer.step()
 
         for n, p in model.named_parameters():
@@ -102,45 +86,11 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     trn_set, tst_set, zca = data.get_data(dataset=dataset, root='datasets', batch_size=batch_size,
                                           whiten_lvl=whiten_lvl)
 
-    model = Net(hebb_params)
+    model = Net_BP(hebb_params)
     model.to(device=device)
 
-    # Hebbian training
-    print("Starting Hebbian training...")
-    # Optimizer only for the Hebbian layers
-    # hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
-    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
-    hebb_optimizer = optim.SGD(hebb_params, lr=0.1)  # Dummy optimizer for Hebbian updates
-    for epoch in range(2):
-        hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
-        print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
-        model.eval()
-        print("Visualizing Filters")
-        model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-
-    # Freeze Hebbian layers
-    for param in model.conv1.parameters():
-        param.requires_grad = False
-    for param in model.conv2.parameters():
-        param.requires_grad = False
-    # for param in model.conv3.parameters():
-    #     param.requires_grad = False
-    # for param in model.conv4.parameters():
-    #     param.requires_grad = False
-
-    # print("Visualizing Class separation")
-    # model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
-
     criterion = nn.CrossEntropyLoss()
-    # Should only Train Classifier
-    class_params = list(model.fc1.parameters()) + list(model.fc2.parameters())
-    # class_params = list(model.fc3.parameters())
-    optimizer = optim.SGD(class_params, lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
-    # Can train whole modelm
-    # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
     scheduler = sched.MultiStepLR(optimizer, milestones=sched_milestones, gamma=sched_gamma)
 
     results = {'trn_loss': {}, 'trn_acc': {}, 'tst_loss': {}, 'tst_acc': {}}
@@ -150,7 +100,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     if os.path.exists('tboard/{}'.format(exp_name)): shutil.rmtree('tboard/{}'.format(exp_name))
     tboard = SummaryWriter('tboard/{}'.format(exp_name))
 
-    print("Training Classifier")
+    print("Training SGD Classifier")
     for epoch in range(1, epochs + 1):
         t0 = time()
         print("\nEPOCH {}/{} | {}".format(epoch, epochs, exp_name))
@@ -184,8 +134,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         print("Test loss: {}, accuracy: {}".format(tst_loss, tst_acc))
         # Visualization
         # print("Visualizing Filters")
-        # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+        model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+        model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
         tboard.add_scalar("Loss/test", trn_loss, epoch)
         tboard.add_scalar("Accuracy/test", trn_acc, epoch)
 

@@ -2,13 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from hebb import HebbianConv2d
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.manifold import TSNE
 from tqdm import tqdm
-
-default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
 
 
 class Triangle(nn.Module):
@@ -25,14 +22,13 @@ class Triangle(nn.Module):
         result = torch.abs(positive - negative + self.eps) ** self.power
         return result * torch.sign(positive - negative)
 
-class Net(nn.Module):
+class Net_BP(nn.Module):
     def __init__(self, hebb_params=None):
         super().__init__()
 
-        if hebb_params is None: hebb_params = default_hebb_params
 
         # A single convolutional layer
-        self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
+        self.conv1 = nn.Conv2d(3, 96, kernel_size=(5,5), bias=False)
         self.bn1 = nn.BatchNorm2d(96, affine=False)
 
         # Aggregation stage
@@ -41,9 +37,9 @@ class Net(nn.Module):
 
         # Final fully-connected 2-layer classifier
         hidden_shape = self.get_hidden_shape()
-        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params)
+        self.conv2 = nn.Conv2d(96, 128, kernel_size=(3,3), bias=False)
         self.bn2 = nn.BatchNorm2d(128, affine=False)
-        self.fc1 = nn.Linear(128 * 12 * 12, 300)
+        self.fc1 = nn.Linear(128*12*12, 300)
         self.fc2 = nn.Linear(300, 10)
 
         self._initialize_weights()
@@ -75,19 +71,6 @@ class Net(nn.Module):
         # x = self.fc3(torch.dropout(x.reshape(x.shape[0], x.shape[1]), p=0.1, train=self.training))
         return x
 
-    def forward_hebbian(self, x):
-        x = self.forward_features(x)
-        x = self.bn2(Triangle()(self.conv2(x)))
-        return x
-
-    def hebbian_train(self, dataloader, device):
-        self.train()
-        for inputs, _ in tqdm(dataloader, ncols=80):
-            inputs = inputs.to(device)
-            _ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
-            for layer in [self.conv1, self.conv2]:
-                if isinstance(layer, HebbianConv2d):
-                    layer.local_update()
 
     def plot_grid(self, tensor, path, num_rows=3, num_cols=4, layer_name=""):
         # Ensure we're working with the first 12 filters (or less if there are fewer)

@@ -34,7 +34,7 @@ class Net_Full(nn.Module):
         self.conv4 = HebbianConv2d(192, 256, 3, 1, **hebb_params)
         self.bn4 = nn.BatchNorm2d(256, affine=False)
         # Final fully-connected 2-layer classifier
-        self.fc1 = nn.Linear(256 * 12 * 12, 300)
+        self.fc1 = nn.Linear(2304, 300)
         # self.bn5 = nn.BatchNorm2d(300, affine=False)
         self.fc2 = nn.Linear(300, 10)
 
@@ -130,6 +130,8 @@ class Net_Full(nn.Module):
                 inputs = inputs.to(device)
                 x = self.forward_features(inputs)
                 x = self.bn2(torch.relu(self.conv2(x)))
+                x = self.bn3(self.pool(torch.relu(self.conv3(x))))
+                x = self.bn4(torch.relu(self.conv4(x)))
                 x = x.reshape(x.size(0), -1)
                 features.append(x.cpu().numpy())
                 labels.append(targets.numpy())

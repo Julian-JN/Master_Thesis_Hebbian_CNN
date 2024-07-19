@@ -110,17 +110,24 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     # Optimizer only for the Hebbian layers
     # hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
     hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
-    hebb_optimizer = optim.SGD(hebb_params, lr=0.1)  # Dummy optimizer for Hebbian updates
+    hebb_optimizer = optim.SGD(hebb_params, lr=1)  # Dummy optimizer for Hebbian updates
     for epoch in range(2):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
-        model.eval()
-        print("Visualizing Filters")
-        model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+        # print("Visualizing Filters")
+        # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+        # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
 
+    print("Visualizing Filters")
+    model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
+    model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+    # print("Visualizing Receptive Fields")
+    # model.visualize_receptive_fields('conv1', trn_set, num_neurons=10, num_batches=10,
+    #                                  save_path='conv1_receptive_fields.png')
+    # model.visualize_receptive_fields('conv2', trn_set, num_neurons=10, num_batches=10,
+    #                                  save_path='conv2_receptive_fields.png')
     # Freeze Hebbian layers
     for param in model.conv1.parameters():
         param.requires_grad = False
@@ -131,8 +138,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     # for param in model.conv4.parameters():
     #     param.requires_grad = False
 
-    # print("Visualizing Class separation")
-    # model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
+    print("Visualizing Class separation")
+    model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
 
     criterion = nn.CrossEntropyLoss()
     # Should only Train Classifier

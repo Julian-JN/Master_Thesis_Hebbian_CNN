@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.manifold import TSNE
 from tqdm import tqdm
+from itertools import islice
+
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
 
@@ -34,9 +36,8 @@ class Net(nn.Module):
         # A single convolutional layer
         self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
         self.bn1 = nn.BatchNorm2d(96, affine=False)
-
         # Aggregation stage
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        # self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.pool = nn.MaxPool2d(2)
 
         # Final fully-connected 2-layer classifier
@@ -79,6 +80,7 @@ class Net(nn.Module):
         x = self.forward_features(x)
         x = self.bn2(Triangle()(self.conv2(x)))
         return x
+
 
     def hebbian_train(self, dataloader, device):
         self.train()
@@ -151,3 +153,66 @@ class Net(nn.Module):
         if save_path:
             plt.savefig(save_path)
         plt.show()
+
+    def visualize_receptive_fields(self, layer_name, dataloader, num_neurons=10, num_batches=10, save_path=None):
+        self.eval()
+        device = next(self.parameters()).device
+        layer = getattr(self, layer_name)
+
+        # Create a figure to display the receptive fields
+        fig, axes = plt.subplots(2, 5, figsize=(20, 8))
+        fig.suptitle(f'Receptive Fields of {layer_name}')
+
+        # Hook to capture the output of the specified layer
+        def hook_fn(module, input, output):
+            self.activations = output
+
+        handle = layer.register_forward_hook(hook_fn)
+
+        # Compute gradients for the first `num_neurons` neurons
+        receptive_fields = torch.zeros(num_neurons, *next(iter(dataloader))[0].shape[1:], device=device)
+
+        for inputs, _ in tqdm(islice(dataloader, num_batches), desc="Computing receptive fields", total=num_batches):
+            inputs = inputs.to(device)
+            inputs.requires_grad_()
+
+            # Perform a forward pass to get the activations
+            self.activations = None  # Reset activations
+            self(inputs)
+            activations = self.activations
+
+            for i in range(num_neurons):
+                self.zero_grad()
+                activation = activations[:, i].sum()
+                activation.backward(retain_graph=True)
+
+                # Accumulate gradients to average receptive field
+                receptive_fields[i] += inputs.grad.abs().mean(dim=0)
+                inputs.grad.zero_()
+
+        receptive_fields /= num_batches
+
+        for i in range(num_neurons):
+            # Normalize the receptive field for visualization
+            receptive_field = receptive_fields[i].cpu().numpy()
+            receptive_field = (receptive_field - receptive_field.min()) / (receptive_field.max() - receptive_field.min() + 1e-8)
+
+            # Plot the receptive field
+            ax = axes[i // 5, i % 5]
+            if receptive_field.shape[0] == 3:
+                # For RGB images, use all channels
+                ax.imshow(np.transpose(receptive_field, (1, 2, 0)))
+            else:
+                # For grayscale or other number of channels, use the first channel
+                ax.imshow(receptive_field[0], cmap='viridis')
+            ax.set_title(f'Neuron {i}')
+            ax.axis('off')
+
+        plt.tight_layout()
+        if save_path:
+            plt.savefig(save_path)
+        plt.show()
+        plt.close(fig)
+
+        # Remove the hook
+        handle.remove()

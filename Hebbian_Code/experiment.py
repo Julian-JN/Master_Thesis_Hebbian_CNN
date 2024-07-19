@@ -3,6 +3,9 @@ from time import time
 import os
 import shutil
 import copy
+
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 import torch
 import torch.nn as nn
@@ -18,6 +21,8 @@ import params as P
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+import umap
+
 
 
 def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
@@ -90,33 +95,71 @@ def test_one_epoch(model, criterion, test_loader, device, zca, tboard, epoch):
     tboard.add_scalar("Accuracy/test", tst_acc, epoch)
     return tst_loss, tst_acc
 
-def visualize_data_clusters(dataloader):
-    # Initialize lists to store flattened input data and labels
-    input_data_flat = []
+
+def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
+                            n_components=2, random_state=42):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    features_list = []
     labels_list = []
 
-    # Iterate through the entire dataloader
-    for data, labels in dataloader:
-        # Flatten input data and add to list
-        batch_flat = data.view(data.shape[0], -1).cpu().numpy()
-        input_data_flat.append(batch_flat)
-        labels_list.append(labels.cpu().numpy())
+    if model is not None:
+        model.eval()
 
-    # Concatenate all batches
-    input_data_flat = np.vstack(input_data_flat)
+    with torch.no_grad():
+        for data, labels in dataloader:
+            data = data.to(device)
+
+            if model is not None:
+                if hasattr(model, 'extract_features'):
+                    features = model.extract_features(data)
+                else:
+                    features = model(data)
+            else:
+                features = data
+
+            features = features.view(features.size(0), -1).cpu().numpy()
+            features_list.append(features)
+            labels_list.append(labels.numpy())
+
+    features = np.vstack(features_list)
     labels = np.concatenate(labels_list)
 
-    # Apply PCA
-    pca = PCA(n_components=2)
-    projected_data = pca.fit_transform(input_data_flat)
+    # Normalize features
+    scaler = StandardScaler()
+    features_normalized = scaler.fit_transform(features)
 
-    # Plot
-    plt.figure(figsize=(12, 10))
-    scatter = plt.scatter(projected_data[:, 0], projected_data[:, 1], c=labels, alpha=0.5, cmap='viridis')
-    plt.colorbar(scatter, label='Class Labels')
-    plt.title('Data Clusters from Entire Dataset')
-    plt.xlabel('First Principal Component')
-    plt.ylabel('Second Principal Component')
+    # Apply dimensionality reduction
+    if method == 'tsne':
+        reducer = TSNE(n_components=dim, perplexity=perplexity, n_iter=1000, random_state=random_state)
+    elif method == 'umap':
+        reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, n_components=dim, random_state=random_state)
+    else:
+        raise ValueError("Method must be either 'tsne' or 'umap'")
+
+    projected_data = reducer.fit_transform(features_normalized)
+
+    # Plotting
+    if dim == 2:
+        plt.figure(figsize=(12, 10))
+        scatter = plt.scatter(projected_data[:, 0], projected_data[:, 1], c=labels, alpha=0.5, cmap='tab10')
+        plt.colorbar(scatter, label='Class Labels')
+        plt.title(f'CIFAR-10 Data Clusters using {method.upper()} (2D)')
+        plt.xlabel(f'{method.upper()} Component 1')
+        plt.ylabel(f'{method.upper()} Component 2')
+    elif dim == 3:
+        fig = plt.figure(figsize=(12, 10))
+        ax = fig.add_subplot(111, projection='3d')
+        scatter = ax.scatter(projected_data[:, 0], projected_data[:, 1], projected_data[:, 2], c=labels, alpha=0.5,
+                             cmap='tab10')
+        fig.colorbar(scatter, label='Class Labels')
+        ax.set_title(f'CIFAR-10 Data Clusters using {method.upper()} (3D)')
+        ax.set_xlabel(f'{method.upper()} Component 1')
+        ax.set_ylabel(f'{method.upper()} Component 2')
+        ax.set_zlabel(f'{method.upper()} Component 3')
+    else:
+        raise ValueError("dim must be either 2 or 3")
+
     plt.show()
 
 def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
@@ -135,7 +178,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
                                           whiten_lvl=whiten_lvl)
 
     print("Visualising Clusters in Test Set!")
-    visualize_data_clusters(tst_set)
+    visualize_data_clusters(tst_set, method='umap', dim=3)
     model = Net(hebb_params)
     model.to(device=device)
 
@@ -149,14 +192,14 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     for epoch in range(2):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
-        model.visualize_in_input_space(tst_set, num_batches=10)
-
         # print("Visualizing Filters")
         # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
 
+    print("Visualizing Weight to Data")
+    model.visualize_in_input_space(tst_set, num_batches=10)
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
     model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
@@ -176,7 +219,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     #     param.requires_grad = False
 
     print("Visualizing Class separation")
-    model.visualize_class_separation(tst_set, device, f'results/{exp_name}/class_separation_epoch_{epoch}.png')
+    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+
 
     criterion = nn.CrossEntropyLoss()
     # Should only Train Classifier
@@ -239,7 +283,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
             print("New best model found!, Updating best model...")
             best_epoch = epoch
             best_result = tst_acc
-            utils.save_dict(copy.deepcopy(model).state_dict(), 'results/{}/best.pt'.format(exp_name))
+            # utils.save_dict(copy.deepcopy(model).state_dict(), 'results/{}/best.pt'.format(exp_name))
 
         # Save results
         # print("Saving results...")
@@ -268,7 +312,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         # utils.save_grid_dist(grad_dist, 'results/{}/figures/grad_dist.png'.format(exp_name), rows=2,
         #                      cols=(len(grad_dist) + 1) // 2, bins=P.DIST_BINS)
         tboard.flush()
-        utils.save_dict(model.state_dict(), 'results/{}/last.pt'.format(exp_name))
+        # utils.save_dict(model.state_dict(), 'results/{}/last.pt'.format(exp_name))
 
         # LR scheduling
         scheduler.step()

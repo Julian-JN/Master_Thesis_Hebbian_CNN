@@ -8,7 +8,7 @@
 #
 # # Transformations to be applied to the training data
 # T_trn = T.Compose([
-#     T.Resize(32),  # Resize shortest size of the image to a fixed size.
+#     # T.Resize(32),  # Resize shortest size of the image to a fixed size.
 #     # T.RandomApply([T.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=30/360)], p=0.3), # Random color jittering
 #     # T.RandomApply([T.ColorJitter(saturation=1.)], p=0.1), # Randomly transform image saturation from nothing to full grayscale
 #     # T.RandomHorizontalFlip(), # Randomly flip image horizontally.
@@ -16,16 +16,14 @@
 #     # T.RandomApply([T.Pad(16, padding_mode='reflect'), T.RandomRotation(10), T.CenterCrop(32)], p=0.3), # Random rotation
 #     # T.RandomApply([T.RandomCrop(32, padding=8, pad_if_needed=True, padding_mode='reflect')], p=0.3), # Random translation and final cropping with fixed size
 #     T.ToTensor(),
-#     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-# ])
+#     T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])])
 #
 # # Transformations to be applied to the test data
 # T_tst = T.Compose([
-#     T.Resize(32),  # Resize shortest size of the image to a fixed size.
+#     # T.Resize(32),  # Resize shortest size of the image to a fixed size.
 #     # T.CenterCrop(32), # Center crop of fixed size
 #     T.ToTensor(),
-#     T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-# ])
+#     T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])])
 #
 #
 # def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, whiten_lvl=None):

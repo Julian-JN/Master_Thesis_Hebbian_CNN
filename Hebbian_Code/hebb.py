@@ -285,10 +285,10 @@ class HebbianConv2d(nn.Module):
                     raise ValueError(f"Unknown WTA competition mode: {self.wta_competition}")
 
                 # Apply mask and normalize
-                y_masked = y_unf_flat * y_mask
+                # y_masked = y_unf_flat * y_mask
                 # Global layer Normalization
-                y_sum = y_masked.sum(dim=0, keepdim=True)
-                # y_sum[y_sum == 0] = 1.0  # Avoid division by zero
+                y_sum = y_mask.sum(dim=0, keepdim=True)
+                y_sum[y_sum == 0] = 1.0  # Avoid division by zero
                 # y_normalized = y_masked / y_sum
                 # Local Normalization
                 # self.y_avg = self.y_avg * 0.9 + y_masked.mean(dim=0) * 0.1  # Exponential moving average
@@ -296,13 +296,13 @@ class HebbianConv2d(nn.Module):
                 # Initialize lateral weights if they don't exist
                 # y_inhibited = self.combined_lateral_inhibition(y_normalized, out_channels, hw)
                 # Compute x_avg using inhibited activations
-                x_avg = torch.mm(y_masked.t(), x_unf.reshape(-1, in_features))
+                x_avg = torch.mm(y_mask.t(), x_unf.reshape(-1, in_features))/ y_sum.t()
                 # Mask for winning neurons only
                 winner_mask = (y_sum > 0).float().view(self.out_channels, 1)
                 # Compute the update: Apply the winner_mask to ensure non-winners do not update their weights
                 update = winner_mask * (x_avg - self.weight.view(self.out_channels, -1))
-                nc = torch.abs(update).amax()
-                update.div_(nc + 1e-30)
+                # nc = torch.abs(update).amax()
+                # update.div_(nc + 1e-30)
                 # Reshape the update to match the weight shape
                 self.delta_w += update.reshape_as(self.weight)
 

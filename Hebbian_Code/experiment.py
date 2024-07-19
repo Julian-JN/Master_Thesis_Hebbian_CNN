@@ -15,6 +15,9 @@ from model import Net
 from model_full import Net_Full
 import utils
 import params as P
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 
 
 def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
@@ -87,6 +90,35 @@ def test_one_epoch(model, criterion, test_loader, device, zca, tboard, epoch):
     tboard.add_scalar("Accuracy/test", tst_acc, epoch)
     return tst_loss, tst_acc
 
+def visualize_data_clusters(dataloader):
+    # Initialize lists to store flattened input data and labels
+    input_data_flat = []
+    labels_list = []
+
+    # Iterate through the entire dataloader
+    for data, labels in dataloader:
+        # Flatten input data and add to list
+        batch_flat = data.view(data.shape[0], -1).cpu().numpy()
+        input_data_flat.append(batch_flat)
+        labels_list.append(labels.cpu().numpy())
+
+    # Concatenate all batches
+    input_data_flat = np.vstack(input_data_flat)
+    labels = np.concatenate(labels_list)
+
+    # Apply PCA
+    pca = PCA(n_components=2)
+    projected_data = pca.fit_transform(input_data_flat)
+
+    # Plot
+    plt.figure(figsize=(12, 10))
+    scatter = plt.scatter(projected_data[:, 0], projected_data[:, 1], c=labels, alpha=0.5, cmap='viridis')
+    plt.colorbar(scatter, label='Class Labels')
+    plt.title('Data Clusters from Entire Dataset')
+    plt.xlabel('First Principal Component')
+    plt.ylabel('Second Principal Component')
+    plt.show()
+
 def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         lr=1e-3, momentum=0.9, wdecay=0., sched_milestones=(), sched_gamma=1., hebb_params=None):
     # Parse command line arguments
@@ -102,6 +134,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     trn_set, tst_set, zca = data.get_data(dataset=dataset, root='datasets', batch_size=batch_size,
                                           whiten_lvl=whiten_lvl)
 
+    print("Visualising Clusters in Test Set!")
+    visualize_data_clusters(tst_set)
     model = Net(hebb_params)
     model.to(device=device)
 
@@ -111,9 +145,12 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     # hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
     hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
     hebb_optimizer = optim.SGD(hebb_params, lr=1)  # Dummy optimizer for Hebbian updates
+    model.visualize_in_input_space(tst_set, num_batches=10)
     for epoch in range(2):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
+        model.visualize_in_input_space(tst_set, num_batches=10)
+
         # print("Visualizing Filters")
         # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')

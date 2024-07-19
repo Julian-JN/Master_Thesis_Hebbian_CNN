@@ -1,11 +1,13 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.decomposition import PCA
 
 from hebb import HebbianConv2d
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.manifold import TSNE
+from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from itertools import islice
 
@@ -69,7 +71,7 @@ class Net(nn.Module):
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.bn2(Triangle()(self.conv2(x)))
+        x = self.bn2(torch.relu_(self.conv2(x)))
         x = x.reshape(x.size(0), -1)
         x = self.fc1(x)
         x = self.fc2(x)
@@ -78,7 +80,7 @@ class Net(nn.Module):
 
     def forward_hebbian(self, x):
         x = self.forward_features(x)
-        x = self.bn2(Triangle()(self.conv2(x)))
+        x = self.bn2(torch.relu(self.conv2(x)))
         return x
 
 
@@ -135,7 +137,7 @@ class Net(nn.Module):
             for inputs, targets in dataloader:
                 inputs = inputs.to(device)
                 x = self.forward_features(inputs)
-                x = self.bn2(Triangle()(self.conv2(x)))
+                # x = self.bn2(torch.relu(self.conv2(x)))
                 x = x.reshape(x.size(0), -1)
                 features.append(x.cpu().numpy())
                 labels.append(targets.numpy())
@@ -143,13 +145,21 @@ class Net(nn.Module):
         features = np.concatenate(features, axis=0)
         labels = np.concatenate(labels, axis=0)
 
-        tsne = TSNE(n_components=2, random_state=42)
+        # Standardize the features
+        scaler = StandardScaler()
+        features = scaler.fit_transform(features)
+        tsne = TSNE(n_components=2, random_state=42, perplexity=30)
         features_2d = tsne.fit_transform(features)
-
-        plt.figure(figsize=(10, 8))
-        scatter = plt.scatter(features_2d[:, 0], features_2d[:, 1], c=labels, cmap='tab10')
-        plt.colorbar(scatter)
+        plt.figure(figsize=(12, 10))
+        # Use different markers for each class
+        markers = ['o', 's', '^', 'P', 'D', '*', 'X', 'h', '8', '<']
+        unique_labels = np.unique(labels)
+        for i, label in enumerate(unique_labels):
+            plt.scatter(features_2d[labels == label, 0], features_2d[labels == label, 1],
+                        marker=markers[i % len(markers)], alpha=0.9, label=str(label), cmap='tab10')
+        plt.colorbar()
         plt.title('t-SNE visualization of features before the linear layer')
+        plt.legend()
         if save_path:
             plt.savefig(save_path)
         plt.show()
@@ -213,6 +223,54 @@ class Net(nn.Module):
             plt.savefig(save_path)
         plt.show()
         plt.close(fig)
-
         # Remove the hook
         handle.remove()
+
+    def visualize_in_input_space(self, dataloader, num_batches=10):
+        self.eval()
+        # Get the weight vectors
+        weights = self.conv1.weight.detach().cpu().numpy().reshape(self.conv1.out_channels, -1)
+
+        # Initialize lists to store flattened input data and labels
+        input_data_flat = []
+        labels_list = []
+
+        # Iterate through the dataloader
+        for i, (data, labels) in enumerate(dataloader):
+            if num_batches is not None and i >= num_batches:
+                break
+
+            # Flatten input data and add to list
+            batch_flat = data.view(data.shape[0], -1).cpu().numpy()
+            input_data_flat.append(batch_flat)
+            labels_list.append(labels.cpu().numpy())
+
+        # Concatenate all batches
+        input_data_flat = np.vstack(input_data_flat)
+        labels = np.concatenate(labels_list)
+
+        # Pad weights to match input dimension
+        input_dim = input_data_flat.shape[1]
+        weight_dim = weights.shape[1]
+        padded_weights = np.pad(weights, ((0, 0), (0, input_dim - weight_dim)), mode='constant')
+
+        # Combine padded weights and input data
+        combined_data = np.vstack([padded_weights, input_data_flat])
+
+        # Apply PCA
+        pca = PCA(n_components=2)
+        projected_data = pca.fit_transform(combined_data)
+
+        # Separate projected weights and input data
+        projected_weights = projected_data[:self.conv1.out_channels]
+        projected_inputs = projected_data[self.conv1.out_channels:]
+
+        # Plot
+        plt.figure(figsize=(12, 10))
+        scatter = plt.scatter(projected_inputs[:, 0], projected_inputs[:, 1], c=labels, alpha=0.5, cmap='viridis')
+        plt.colorbar(scatter, label='Class Labels')
+        plt.scatter(projected_weights[:, 0], projected_weights[:, 1], c='red', marker='x', s=100,
+                    label='Weight Vectors')
+        plt.title('Input Data, Labels, and Weight Vectors in 2D PCA Space')
+        plt.legend()
+        plt.show()

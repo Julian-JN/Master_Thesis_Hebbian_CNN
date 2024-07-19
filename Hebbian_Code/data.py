@@ -211,7 +211,7 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
         trn_set.transform = full_transform
         tst_set.transform = full_transform
 
-    trn_loader = DataLoader(trn_set, batch_size=batch_size, shuffle=True, num_workers=P.NUM_WORKERS)
+    trn_loader = DataLoader(trn_set, batch_size=batch_size, shuffle=False, num_workers=P.NUM_WORKERS)
     tst_loader = DataLoader(tst_set, batch_size=batch_size, shuffle=False, num_workers=P.NUM_WORKERS)
 
     return trn_loader, tst_loader, zca

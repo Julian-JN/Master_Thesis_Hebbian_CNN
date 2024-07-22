@@ -177,8 +177,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     trn_set, tst_set, zca = data.get_data(dataset=dataset, root='datasets', batch_size=batch_size,
                                           whiten_lvl=whiten_lvl)
 
-    print("Visualising Clusters in Test Set!")
-    visualize_data_clusters(tst_set, method='umap', dim=3)
+    # print("Visualising Clusters in Test Set!")
+    # visualize_data_clusters(tst_set, method='umap', dim=3)
     model = Net(hebb_params)
     model.to(device=device)
 
@@ -188,7 +188,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     # hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
     hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
     hebb_optimizer = optim.SGD(hebb_params, lr=1)  # Dummy optimizer for Hebbian updates
-    model.visualize_in_input_space(tst_set, num_batches=10)
+    # model.visualize_in_input_space(tst_set, num_batches=10)
     for epoch in range(2):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
@@ -198,8 +198,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
 
-    print("Visualizing Weight to Data")
-    model.visualize_in_input_space(tst_set, num_batches=10)
+    # print("Visualizing Weight to Data")
+    # model.visualize_in_input_space(tst_set, num_batches=10)
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
     model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')

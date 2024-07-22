@@ -14,7 +14,7 @@ MOMENTUM = 0.9
 WDECAY=5e-4
 SCHED_MILESTONES = range(30, 50, 2)
 SCHED_GAMMA = 1
-HEBB_PARAMS = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+HEBB_PARAMS = {'mode': 'hwta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
 # HEBB_PARAMS = {'mode': 'hpca', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
 
 

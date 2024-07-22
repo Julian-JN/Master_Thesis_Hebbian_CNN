@@ -44,7 +44,7 @@ class Net(nn.Module):
 
         # Final fully-connected 2-layer classifier
         hidden_shape = self.get_hidden_shape()
-        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params)
+        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params, prune_rate=0.99)
         self.bn2 = nn.BatchNorm2d(128, affine=False)
         self.fc1 = nn.Linear(128 * 12 * 12, 300)
         self.fc2 = nn.Linear(300, 10)

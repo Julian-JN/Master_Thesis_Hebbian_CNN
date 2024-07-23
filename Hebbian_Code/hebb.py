@@ -1,3 +1,5 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,12 +28,12 @@ class HebbianConv2d(nn.Module):
     MODE_LATERAL_INHIBITION = "lateral"
     MODE_BCM = 'bcm'
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation = 1, padding = 0,
                  w_nrm=True, bias=False, act=nn.Identity(),
-                 mode=MODE_BASIC_HEBBIAN, k=1, patchwise=True,
-                 contrast=1., uniformity=False, alpha=0., wta_competition='similarity_filter',
+                 mode=MODE_SOFTWTA, k=1, patchwise=True,
+                 contrast=1., uniformity=False, alpha=1., wta_competition='similarity_filter',
                  lateral_competition="filter",
-                 lateral_inhibition_strength=0.01, top_k=1, prune_rate = 0):
+                 lateral_inhibition_strength=0.01, top_k=1, prune_rate = 0, t_invert = 1):
         """
 
 		:param out_channels: output channels of the convolutional kernel
@@ -56,12 +58,12 @@ class HebbianConv2d(nn.Module):
         self.in_channels = in_channels
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
+        self.dilation = _pair(dilation)
+        self.padding = padding
 
-        self.weight = nn.Parameter(torch.empty((self.out_channels, self.in_channels, *self.kernel_size)),
-                                   requires_grad=True)
-        nn.init.xavier_normal_(self.weight)
+        weight_range = 25 / math.sqrt((in_channels) * kernel_size * kernel_size)
+        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)), requires_grad=True)
         self.w_nrm = w_nrm
-        self.bias = nn.Parameter(torch.zeros(self.out_channels), requires_grad=bias)
         self.act = act
         # self.act = self.cos_sim2d
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
@@ -81,37 +83,10 @@ class HebbianConv2d(nn.Module):
         self.lebesgue_p = 2
 
         self.prune_rate = prune_rate  # 99% of connections are pruned
-
-        self.lr_scheduler_config = {'lr': 0.5, 'adaptive': True}
-        self.lr_adaptive = self.lr_scheduler_config['adaptive']
-        if self.lr_adaptive:
-            print("Adaptive learning rate")
-            self.register_buffer('lr', torch.ones_like(self.weight))
-        else:
-            print("Stable learning rate")
-            self.lr = self.lr_scheduler_config['lr']
-            print(self.lr)
-
-        self.reset()
-
-    def reset(self):
-        if self.lr_adaptive:
-            self.update_lr()
+        self.t_invert = torch.tensor(t_invert)
 
     def generate_mask(self):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
-
-    def update_lr(self):
-        if self.lr_adaptive:
-            norm = self.get_radius()
-            lr_amplitude = self.lr_scheduler_config['lr']
-            power_lr = self.lr_scheduler_config.get('power_lr', 1)
-            lr = lr_amplitude * torch.pow(torch.abs(norm - torch.ones_like(norm)) + 1e-10, power_lr)
-            self.lr = lr.view(-1, 1, 1, 1).expand_as(self.weight)
-
-    def get_radius(self):
-        weight = self.weight.view(self.weight.shape[0], -1)
-        return torch.linalg.norm(weight, dim=1, ord=self.lebesgue_p)
 
     def cos_sim2d(self, x):
         # print(x.shape)
@@ -155,7 +130,7 @@ class HebbianConv2d(nn.Module):
 		This function provides the logic for combining input x and weight w
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
-        return torch.conv2d(x, w, bias=self.bias, stride=self.stride)
+        return torch.conv2d(x, self.weight, None, self.stride, 0, self.dilation)
 
     def compute_activation(self, x):
         w = self.weight
@@ -347,8 +322,7 @@ class HebbianConv2d(nn.Module):
                 batch_size, out_channels, height_out, width_out = y.shape
                 # Compute soft WTA using softmax
                 flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
-                t_invert = 1
-                flat_softwta_activs = F.softmax(t_invert * flat_weighted_inputs, dim=0)
+                flat_softwta_activs = F.softmax(self.t_invert * flat_weighted_inputs, dim=0)
                 flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
                 # Find winning neurons
                 win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
@@ -358,8 +332,7 @@ class HebbianConv2d(nn.Module):
                 # Reshape softwta activations
                 softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,1)
                 # Compute yx using conv2d
-                yx = F.conv2d(x.transpose(0, 1),softwta_activs.transpose(0, 1),stride=self.stride).transpose(0, 1)
-                # Compute yu
+                yx = F.conv2d(x.transpose(0, 1),softwta_activs.transpose(0, 1),stride=self.dilation,dilation=self.stride).transpose(0, 1)                # Compute yu
                 yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
                 # Compute update
                 update = yx - yu.view(-1, 1, 1, 1) * self.weight
@@ -420,9 +393,8 @@ class HebbianConv2d(nn.Module):
 		Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
 		"""
         if self.weight.grad is None:
-            self.weight.grad = self.lr*(-self.alpha * self.delta_w)
+            self.weight.grad = -self.alpha * self.delta_w
         else:
-            self.weight.grad = self.lr*((1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w)
+            self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
         self.delta_w.zero_()
-        if self.lr_adaptive:
-            self.update_lr()
+

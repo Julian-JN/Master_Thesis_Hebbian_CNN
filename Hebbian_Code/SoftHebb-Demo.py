@@ -53,7 +53,7 @@ class SoftHebbConv2d(nn.Module):
         self.t_invert = torch.tensor(t_invert)
 
     def forward(self, x):
-        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
         # perform conv, obtain weighted input u \in [B, OC, OH, OW]
         weighted_input = F.conv2d(x, self.weight, None, self.stride, 0, self.dilation, self.groups)
 
@@ -99,32 +99,32 @@ class DeepSoftHebb(nn.Module):
         super(DeepSoftHebb, self).__init__()
         # block 1
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = SoftHebbConv2d(in_channels=3, out_channels=96, kernel_size=5, padding=2, t_invert=1,)
+        self.conv1 = SoftHebbConv2d(in_channels=3, out_channels=96, kernel_size=5, t_invert=1,)
         self.activ1 = Triangle(power=0.7)
-        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        self.pool1 = nn.MaxPool2d(2)
         # block 2
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = SoftHebbConv2d(in_channels=96, out_channels=384, kernel_size=3, padding=1, t_invert=0.65,)
+        self.conv2 = SoftHebbConv2d(in_channels=96, out_channels=128, kernel_size=3, t_invert=0.65,)
         self.activ2 = Triangle(power=1.4)
-        self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
-        # block 3
-        self.bn3 = nn.BatchNorm2d(384, affine=False)
-        self.conv3 = SoftHebbConv2d(in_channels=384, out_channels=1536, kernel_size=3, padding=1, t_invert=0.25,)
-        self.activ3 = Triangle(power=1.)
-        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+        # self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        # # block 3
+        # self.bn3 = nn.BatchNorm2d(384, affine=False)
+        # self.conv3 = SoftHebbConv2d(in_channels=384, out_channels=1536, kernel_size=3, padding=1, t_invert=0.25,)
+        # self.activ3 = Triangle(power=1.)
+        # self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
         # block 4
         self.flatten = nn.Flatten()
-        self.classifier = nn.Linear(24576, 10)
-        self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
+        self.classifier = nn.Linear(128*12*12, 10)
+        self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 128*12*12)
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
         # block 1
         out = self.pool1(self.activ1(self.conv1(self.bn1(x))))
         # block 2
-        out = self.pool2(self.activ2(self.conv2(self.bn2(out))))
+        out = self.activ2(self.conv2(self.bn2(out)))
         # block 3
-        out = self.pool3(self.activ3(self.conv3(self.bn3(out))))
+        # out = self.pool3(self.activ3(self.conv3(self.bn3(out))))
         # block 4
         return self.classifier(self.dropout(self.flatten(out)))
 
@@ -260,7 +260,7 @@ class CustomStepLR(StepLR):
 
 
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
-                            n_components=2, random_state=42, num_batches=40):
+                            n_components=2, random_state=42, num_batches=80):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     features_list = []
     labels_list = []
@@ -326,8 +326,7 @@ if __name__ == "__main__":
 
     unsup_optimizer = TensorLRSGD([
         {"params": model.conv1.parameters(), "lr": -0.08, },  # SGD does descent, so set lr to negative
-        {"params": model.conv2.parameters(), "lr": -0.005, },
-        {"params": model.conv3.parameters(), "lr": -0.01, },
+        {"params": model.conv2.parameters(), "lr": -0.005, }
     ], lr=0)
     unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
@@ -361,13 +360,10 @@ if __name__ == "__main__":
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False
-    model.conv3.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
-    model.conv3.eval()
     model.bn1.eval()
     model.bn2.eval()
-    model.bn3.eval()
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     for epoch in range(50):
@@ -395,7 +391,7 @@ if __name__ == "__main__":
                 correct += (predicted == labels).sum().item()
         sup_lr_scheduler.step()
         # Evaluation on test set
-        if epoch % 10 == 0 or epoch == 49:
+        if epoch % 10 == 0 or epoch == 1:
             print(f'Accuracy of the network on the train images: {100 * correct // total} %')
             print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
 
@@ -419,5 +415,5 @@ if __name__ == "__main__":
                     loss = criterion(outputs, labels)
                     running_loss += loss.item()
 
-            print(f'Accuracy of the network on the 10000 test images: {100 * correct / total} %')
+            print(f'Accuracy of the network on the test images: {100 * correct / total} %')
             print(f'test loss: {running_loss / total:.3f}')

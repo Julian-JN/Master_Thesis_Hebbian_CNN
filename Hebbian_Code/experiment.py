@@ -20,45 +20,37 @@ import utils
 import params as P
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
 import umap
+import warnings
 
 
-
-def hebbian_train_one_epoch(model, optimizer, train_loader, device, zca):
-    model.train()
+def hebbian_train_one_epoch(model, train_loader, device, zca):
     for inputs, _ in tqdm(train_loader, ncols=80):
         inputs = inputs.to(device)
         # if zca is not None:
         #     inputs = data.whiten(inputs, zca)
-
-        optimizer.zero_grad()
-        outputs = model(inputs)  # Forward pass through the entire network
+        with torch.no_grad():
+            outputs = model(inputs)  # Forward pass through the entire network
         for layer in [model.conv1, model.conv2]:
             if hasattr(layer, 'local_update'):
                 layer.local_update()
-        optimizer.step()
+
 
 def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboard, epoch):
-    model.train()
     epoch_loss, epoch_hits, count = 0, 0, 0
     grads = {}
     for inputs, labels in tqdm(train_loader, ncols=80):
         inputs, labels = inputs.to(device), labels.to(device)
         # if zca is not None:
         #     inputs = data.whiten(inputs, zca)
-
+        optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, labels)
         epoch_loss += loss.sum().item()
         epoch_hits += (torch.max(outputs, dim=1)[1] == labels).int().sum().item()
         count += labels.shape[0]
 
-        optimizer.zero_grad()
         loss.backward()
-        for m in model.modules():
-            if hasattr(m, 'local_update'):
-                m.local_update()
         optimizer.step()
 
         for n, p in model.named_parameters():
@@ -76,7 +68,6 @@ def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboa
 
 
 def test_one_epoch(model, criterion, test_loader, device, zca, tboard, epoch):
-    model.eval()
     epoch_loss, epoch_hits, count = 0, 0, 0
     with torch.no_grad():
         for inputs, labels in tqdm(test_loader, ncols=80):
@@ -153,6 +144,73 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         raise ValueError("dim must be either 2 or 3")
     plt.show()
 
+
+class WeightNormDependentLR(optim.lr_scheduler._LRScheduler):
+    """
+    Custom Learning Rate Scheduler for unsupervised training of SoftHebb Convolutional blocks.
+    Difference between current neuron norm and theoretical converged norm (=1) scales the initial lr.
+    """
+
+    def __init__(self, optimizer, power_lr, last_epoch=-1, verbose=False):
+        self.optimizer = optimizer
+        self.initial_lr_groups = [group['lr'] for group in self.optimizer.param_groups]  # store initial lrs
+        self.power_lr = power_lr
+        super().__init__(optimizer, last_epoch, verbose)
+
+    def get_lr(self):
+        if not self._get_lr_called_within_step:
+            warnings.warn("To get the last learning rate computed by the scheduler, "
+                          "please use `get_last_lr()`.", UserWarning)
+        new_lr = []
+        for i, group in enumerate(self.optimizer.param_groups):
+            for param in group['params']:
+                # difference between current neuron norm and theoretical converged norm (=1) scales the initial lr
+                # initial_lr * |neuron_norm - 1| ** 0.5
+                norm_diff = torch.abs(torch.linalg.norm(param.view(param.shape[0], -1), dim=1, ord=2) - 1) + 1e-10
+                new_lr.append(self.initial_lr_groups[i] * (norm_diff ** self.power_lr)[:, None, None, None])
+        return new_lr
+
+
+class TensorLRSGD(optim.SGD):
+    @torch.no_grad()
+    def step(self, closure=None):
+        """Performs a single optimization step, using a non-scalar (tensor) learning rate.
+        Arguments:
+            closure (callable, optional): A closure that reevaluates the model
+                and returns the loss.
+        """
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            weight_decay = group['weight_decay']
+            momentum = group['momentum']
+            dampening = group['dampening']
+            nesterov = group['nesterov']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                d_p = p.grad
+                if weight_decay != 0:
+                    d_p = d_p.add(p, alpha=weight_decay)
+                if momentum != 0:
+                    param_state = self.state[p]
+                    if 'momentum_buffer' not in param_state:
+                        buf = param_state['momentum_buffer'] = torch.clone(d_p).detach()
+                    else:
+                        buf = param_state['momentum_buffer']
+                        buf.mul_(momentum).add_(d_p, alpha=1 - dampening)
+                    if nesterov:
+                        d_p = d_p.add(buf, alpha=momentum)
+                    else:
+                        d_p = buf
+
+                p.add_(-group['lr'] * d_p)
+        return loss
+
 def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         lr=1e-3, momentum=0.9, wdecay=0., sched_milestones=(), sched_gamma=1., hebb_params=None):
     # Parse command line arguments
@@ -177,45 +235,41 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     print("Starting Hebbian training...")
     # Optimizer only for the Hebbian layers
     # hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
-    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
-    hebb_optimizer = optim.SGD(hebb_params, lr=1)  # Dummy optimizer for Hebbian updates
+    unsup_optimizer = TensorLRSGD([
+        {"params": model.conv1.parameters(), "lr": 0.08, },  # SGD does descent, so set lr to negative
+        {"params": model.conv2.parameters(), "lr": 0.005, }
+    ], lr=0)
+
+    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
     # model.visualize_in_input_space(tst_set, num_batches=10)
     for epoch in range(1):
-        hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
+        unsup_optimizer.zero_grad()
+        hebbian_train_one_epoch(model, trn_set, device, zca)
+        unsup_optimizer.step()
+        unsup_lr_scheduler.step()
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
-        # print("Visualizing Filters")
-        # model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
-        # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+
+    unsup_optimizer.zero_grad()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
     model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-    print("Visualizing Weight to Data")
-    model.visualize_in_input_space(tst_set)
-    # print("Visualizing Receptive Fields")
-    # model.visualize_receptive_fields('conv1', trn_set, num_neurons=10, num_batches=10,
-    #                                  save_path='conv1_receptive_fields.png')
-    # model.visualize_receptive_fields('conv2', trn_set, num_neurons=10, num_batches=10,
-    #                                  save_path='conv2_receptive_fields.png')
+    # print("Visualizing Weight to Data")
+    # model.visualize_in_input_space(tst_set)
 
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
 
     # Freeze Hebbian layers
-    for param in model.conv1.parameters():
-        param.requires_grad = False
-    for param in model.conv2.parameters():
-        param.requires_grad = False
+    model.conv1.requires_grad = False
+    model.conv2.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
     model.bn1.eval()
     model.bn2.eval()
     criterion = nn.CrossEntropyLoss()
     # Should only Train Classifier
-    class_params = list(model.fc1.parameters()) + list(model.fc2.parameters())
-    # class_params = list(model.fc3.parameters())
-    optimizer = optim.SGD(class_params, lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
+    class_params = list(model.fc1.parameters())
+    optimizer = optim.Adam(class_params, lr=lr)
     # Can train whole modelm
     # optimizer = optim.SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=wdecay, nesterov=True)
     scheduler = sched.MultiStepLR(optimizer, milestones=sched_milestones, gamma=sched_gamma)
@@ -233,7 +287,8 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         print("\nEPOCH {}/{} | {}".format(epoch, epochs, exp_name))
         # Training phase
         model.fc1.train()
-        model.fc2.train()
+        model.dropout.train()
+        # model.fc2.train()
         weights, weight_updates, grads = {n: copy.deepcopy(p) for n, p in model.named_parameters()}, {}, {}
         trn_loss, trn_acc, grads = train_one_epoch(model, criterion, optimizer, trn_set, device, zca, tboard, epoch)
         tboard.add_scalar("Loss/train", trn_loss, epoch)

@@ -24,7 +24,7 @@ class Triangle(nn.Module):
         self.power = power
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:
-        input = input - torch.mean(input, dim=1, keepdim=True)
+        input = input - torch.mean(input.data, axis=1, keepdims=True)
         return F.relu(input, inplace=self.inplace) ** self.power
 
 class Net_Triangle(nn.Module):
@@ -42,19 +42,12 @@ class Net_Triangle(nn.Module):
         # Final fully-connected 2-layer classifier
         hidden_shape = self.get_hidden_shape()
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params, prune_rate=0.99)
-        self.fc1 = nn.Linear(128 * 12 * 12, 300)
-        self.fc2 = nn.Linear(300, 10)
-
-        self._initialize_weights()
-
-    def _initialize_weights(self):
-        # He initialization for convolutional layers
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            elif isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params, t_invert=0.65)
+        self.flatten = nn.Flatten()
+        self.fc1 = nn.Linear(128 * 12 * 12, 10)
+        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 128 * 12 * 12)
+        self.dropout = nn.Dropout(0.5)
+        # self.fc2 = nn.Linear(300, 10)
 
     def get_hidden_shape(self):
         self.eval()
@@ -63,34 +56,35 @@ class Net_Triangle(nn.Module):
 
     def forward_features(self, x):
         x = self.bn1(x)
-        x = self.pool(Triangle()(self.conv1(x)))
+        x = self.pool(Triangle(power=0.7)(self.conv1(x)))
         return x
 
     def forward(self, x):
         x = self.forward_features(x)
         x = self.bn2(x)
-        x = Triangle()(self.conv2(x))
-        x = x.reshape(x.size(0), -1)
-        x = self.fc1(x)
-        x = self.fc2(x)
+        x = Triangle(power=1.4)(self.conv2(x))
+        x = self.flatten(x)
+        x = self.fc1(self.dropout(x))
+
+        # x = self.fc2(x)
         # x = self.fc3(torch.dropout(x.reshape(x.shape[0], x.shape[1]), p=0.1, train=self.training))
         return x
 
-    def forward_hebbian(self, x):
-        x = self.forward_features(x)
-        x = self.bn2(x)
-        x = Triangle()(self.conv2(x))
-        return x
-
-
-    def hebbian_train(self, dataloader, device):
-        self.train()
-        for inputs, _ in tqdm(dataloader, ncols=80):
-            inputs = inputs.to(device)
-            _ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
-            for layer in [self.conv1, self.conv2]:
-                if isinstance(layer, HebbianConv2d):
-                    layer.local_update()
+    # def forward_hebbian(self, x):
+    #     x = self.forward_features(x)
+    #     x = self.bn2(x)
+    #     x = Triangle(power=1.4)(self.conv2(x))
+    #     return x
+    #
+    #
+    # def hebbian_train(self, dataloader, device):
+    #     self.train()
+    #     for inputs, _ in tqdm(dataloader, ncols=80):
+    #         inputs = inputs.to(device)
+    #         _ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
+    #         for layer in [self.conv1, self.conv2]:
+    #             if isinstance(layer, HebbianConv2d):
+    #                 layer.local_update()
 
     def plot_grid(self, tensor, path, num_rows=3, num_cols=4, layer_name=""):
         # Ensure we're working with the first 12 filters (or less if there are fewer)
@@ -193,7 +187,7 @@ class Net_Triangle(nn.Module):
                 data = data.to(device)
                 # Extract features if possible, otherwise use raw data
                 if hasattr(self, 'forward_features'):
-                    features = self.forward_features(data)
+                    features = self.conv1(data)
                 else:
                     features = data
                 # Flatten input data and add to list

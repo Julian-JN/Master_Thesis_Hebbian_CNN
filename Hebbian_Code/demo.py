@@ -6,10 +6,10 @@ from experiment import run
 
 
 DATASET = 'cifar10'
-WHITEN_LVL = 1e-1
-BATCH_SIZE = 64
+WHITEN_LVL = None
+BATCH_SIZE = 32
 EPOCHS = 10
-LR = 1e-3
+LR = 0.001
 MOMENTUM = 0.9
 WDECAY=5e-4
 SCHED_MILESTONES = range(30, 50, 2)

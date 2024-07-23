@@ -10,6 +10,8 @@ from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from itertools import islice
+import umap
+
 
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
@@ -132,45 +134,34 @@ class Net(nn.Module):
         self.eval()
         device = next(self.parameters()).device
         layer = getattr(self, layer_name)
-
         # Create a figure to display the receptive fields
         fig, axes = plt.subplots(2, 5, figsize=(20, 8))
         fig.suptitle(f'Receptive Fields of {layer_name}')
-
         # Hook to capture the output of the specified layer
         def hook_fn(module, input, output):
             self.activations = output
-
         handle = layer.register_forward_hook(hook_fn)
-
         # Compute gradients for the first `num_neurons` neurons
         receptive_fields = torch.zeros(num_neurons, *next(iter(dataloader))[0].shape[1:], device=device)
-
         for inputs, _ in tqdm(islice(dataloader, num_batches), desc="Computing receptive fields", total=num_batches):
             inputs = inputs.to(device)
             inputs.requires_grad_()
-
             # Perform a forward pass to get the activations
             self.activations = None  # Reset activations
             self(inputs)
             activations = self.activations
-
             for i in range(num_neurons):
                 self.zero_grad()
                 activation = activations[:, i].sum()
                 activation.backward(retain_graph=True)
-
                 # Accumulate gradients to average receptive field
                 receptive_fields[i] += inputs.grad.abs().mean(dim=0)
                 inputs.grad.zero_()
-
         receptive_fields /= num_batches
-
         for i in range(num_neurons):
             # Normalize the receptive field for visualization
             receptive_field = receptive_fields[i].cpu().numpy()
             receptive_field = (receptive_field - receptive_field.min()) / (receptive_field.max() - receptive_field.min() + 1e-8)
-
             # Plot the receptive field
             ax = axes[i // 5, i % 5]
             if receptive_field.shape[0] == 3:
@@ -181,7 +172,6 @@ class Net(nn.Module):
                 ax.imshow(receptive_field[0], cmap='viridis')
             ax.set_title(f'Neuron {i}')
             ax.axis('off')
-
         plt.tight_layout()
         if save_path:
             plt.savefig(save_path)
@@ -190,71 +180,55 @@ class Net(nn.Module):
         # Remove the hook
         handle.remove()
 
-
-    def visualize_in_input_space(self, dataloader, num_batches=10):
+    def visualize_in_input_space(self, dataloader, num_batches=10, n_neighbors=15, min_dist=0.1, n_components=2):
         self.eval()
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
         # Get the weight vectors
         weights = self.conv1.weight.detach().cpu().numpy().reshape(self.conv1.out_channels, -1)
-
         # Initialize lists to store flattened input data and labels
         input_data_flat = []
         labels_list = []
-
         # Iterate through the dataloader
         with torch.no_grad():
             for i, (data, labels) in enumerate(dataloader):
                 if num_batches is not None and i >= num_batches:
                     break
-
                 data = data.to(device)
                 # Extract features if possible, otherwise use raw data
                 if hasattr(self, 'extract_features'):
                     features = self.forward_features(data)
                 else:
                     features = data
-
                 # Flatten input data and add to list
                 batch_flat = features.view(features.size(0), -1).cpu().numpy()
                 input_data_flat.append(batch_flat)
                 labels_list.append(labels.cpu().numpy())
-
         # Concatenate all batches
         input_data_flat = np.vstack(input_data_flat)
         labels = np.concatenate(labels_list)
-
         # Pad weights to match input dimension
         input_dim = input_data_flat.shape[1]
         weight_dim = weights.shape[1]
         padded_weights = np.pad(weights, ((0, 0), (0, input_dim - weight_dim)), mode='constant')
-
         # Combine padded weights and input data
         combined_data = np.vstack([padded_weights, input_data_flat])
-
-        # Normalize data before PCA
+        # Normalize data before UMAP
         scaler = StandardScaler()
         combined_data_normalized = scaler.fit_transform(combined_data)
-
-        # Apply PCA
-        pca = PCA(n_components=2)
-        projected_data = pca.fit_transform(combined_data_normalized)
-
-        # Normalize PCA results
-        projected_data_normalized = StandardScaler().fit_transform(projected_data)
-
-        # Separate projected weights and input data
-        projected_weights = projected_data_normalized[:self.conv1.out_channels]
-        projected_inputs = projected_data_normalized[self.conv1.out_channels:]
-
+        # Apply UMAP
+        reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, n_components=n_components, random_state=42)
+        embedded_data = reducer.fit_transform(combined_data_normalized)
+        # Separate embedded weights and input data
+        embedded_weights = embedded_data[:self.conv1.out_channels]
+        embedded_inputs = embedded_data[self.conv1.out_channels:]
         # Plot
         plt.figure(figsize=(12, 10))
-        scatter = plt.scatter(projected_inputs[:, 0], projected_inputs[:, 1], c=labels, alpha=0.5, cmap='tab10')
+        scatter = plt.scatter(embedded_inputs[:, 0], embedded_inputs[:, 1], c=labels, alpha=0.5, cmap='tab10')
         plt.colorbar(scatter, label='Class Labels')
-        plt.scatter(projected_weights[:, 0], projected_weights[:, 1], c='red', marker='x', s=100,
+        plt.scatter(embedded_weights[:, 0], embedded_weights[:, 1], c='red', marker='x', s=100,
                     label='Weight Vectors')
-        plt.title('Normalized Input Data, Labels, and Weight Vectors in 2D PCA Space')
-        plt.xlabel('First Principal Component')
-        plt.ylabel('Second Principal Component')
+        plt.title('Input Data, Labels, and Weight Vectors in 2D UMAP Space')
+        plt.xlabel('UMAP Dimension 1')
+        plt.ylabel('UMAP Dimension 2')
         plt.legend()
         plt.show()

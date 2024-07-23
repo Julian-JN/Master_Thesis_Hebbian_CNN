@@ -15,7 +15,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import data
 from model import Net
-from model_full import Net_Full
+from model_triangle import Net_Triangle
 import utils
 import params as P
 import numpy as np
@@ -99,36 +99,30 @@ def test_one_epoch(model, criterion, test_loader, device, zca, tboard, epoch):
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
                             n_components=2, random_state=42):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     features_list = []
     labels_list = []
-
     if model is not None:
         model.eval()
-
     with torch.no_grad():
         for data, labels in dataloader:
             data = data.to(device)
-
             if model is not None:
-                if hasattr(model, 'extract_features'):
-                    features = model.extract_features(data)
+                if hasattr(model, 'forward_features'):
+                    print("Extracting model features")
+                    features = model.forward_features(data)
                 else:
-                    features = model(data)
+                    print("Extracting conv features")
+                    features = model.conv1(data)
             else:
                 features = data
-
             features = features.view(features.size(0), -1).cpu().numpy()
             features_list.append(features)
             labels_list.append(labels.numpy())
-
     features = np.vstack(features_list)
     labels = np.concatenate(labels_list)
-
     # Normalize features
     scaler = StandardScaler()
     features_normalized = scaler.fit_transform(features)
-
     # Apply dimensionality reduction
     if method == 'tsne':
         reducer = TSNE(n_components=dim, perplexity=perplexity, n_iter=1000, random_state=random_state)
@@ -136,9 +130,7 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, n_components=dim, random_state=random_state)
     else:
         raise ValueError("Method must be either 'tsne' or 'umap'")
-
     projected_data = reducer.fit_transform(features_normalized)
-
     # Plotting
     if dim == 2:
         plt.figure(figsize=(12, 10))
@@ -159,7 +151,6 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         ax.set_zlabel(f'{method.upper()} Component 3')
     else:
         raise ValueError("dim must be either 2 or 3")
-
     plt.show()
 
 def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
@@ -179,7 +170,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
 
     # print("Visualising Clusters in Test Set!")
     # visualize_data_clusters(tst_set, method='umap', dim=3)
-    model = Net(hebb_params)
+    model = Net_Triangle(hebb_params)
     model.to(device=device)
 
     # Hebbian training
@@ -189,7 +180,7 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters())
     hebb_optimizer = optim.SGD(hebb_params, lr=1)  # Dummy optimizer for Hebbian updates
     # model.visualize_in_input_space(tst_set, num_batches=10)
-    for epoch in range(2):
+    for epoch in range(1):
         hebbian_train_one_epoch(model, hebb_optimizer, trn_set, device, zca)
         print(f"Completed Hebbian training epoch {epoch + 1}/{5}")
         # print("Visualizing Filters")
@@ -197,31 +188,29 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
         # model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv3', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
         # model.visualize_filters('conv4', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
-
-    # print("Visualizing Weight to Data")
-    # model.visualize_in_input_space(tst_set, num_batches=10)
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{exp_name}/conv1_filters_epoch_{epoch}.png')
     model.visualize_filters('conv2', f'results/{exp_name}/conv2_filters_epoch_{epoch}.png')
+    print("Visualizing Weight to Data")
+    model.visualize_in_input_space(tst_set)
     # print("Visualizing Receptive Fields")
     # model.visualize_receptive_fields('conv1', trn_set, num_neurons=10, num_batches=10,
     #                                  save_path='conv1_receptive_fields.png')
     # model.visualize_receptive_fields('conv2', trn_set, num_neurons=10, num_batches=10,
     #                                  save_path='conv2_receptive_fields.png')
+
+    print("Visualizing Class separation")
+    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+
     # Freeze Hebbian layers
     for param in model.conv1.parameters():
         param.requires_grad = False
     for param in model.conv2.parameters():
         param.requires_grad = False
-    # for param in model.conv3.parameters():
-    #     param.requires_grad = False
-    # for param in model.conv4.parameters():
-    #     param.requires_grad = False
-
-    print("Visualizing Class separation")
-    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
-
-
+    model.conv1.eval()
+    model.conv2.eval()
+    model.bn1.eval()
+    model.bn2.eval()
     criterion = nn.CrossEntropyLoss()
     # Should only Train Classifier
     class_params = list(model.fc1.parameters()) + list(model.fc2.parameters())
@@ -242,9 +231,9 @@ def run(exp_name, dataset='cifar10', whiten_lvl=None, batch_size=32, epochs=20,
     for epoch in range(1, epochs + 1):
         t0 = time()
         print("\nEPOCH {}/{} | {}".format(epoch, epochs, exp_name))
-
         # Training phase
-        model.train()
+        model.fc1.train()
+        model.fc2.train()
         weights, weight_updates, grads = {n: copy.deepcopy(p) for n, p in model.named_parameters()}, {}, {}
         trn_loss, trn_acc, grads = train_one_epoch(model, criterion, optimizer, trn_set, device, zca, tboard, epoch)
         tboard.add_scalar("Loss/train", trn_loss, epoch)

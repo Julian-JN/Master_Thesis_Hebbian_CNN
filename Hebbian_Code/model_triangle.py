@@ -42,7 +42,7 @@ class Net_Triangle(nn.Module):
         # Final fully-connected 2-layer classifier
         # hidden_shape = self.get_hidden_shape()
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianConv2d(in_channels=96, out_channels=128, kernel_size=3, stride=1, **hebb_params, t_invert=0.65)
+        self.conv2 = HebbianConv2d(in_channels=96, out_channels=128, kernel_size=3, stride=1, **hebb_params, t_invert=0.65, prune_rate=0.90)
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(128 * 12 * 12, 10)
         self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 128 * 12 * 12)

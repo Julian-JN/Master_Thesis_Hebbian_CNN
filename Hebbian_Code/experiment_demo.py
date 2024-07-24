@@ -8,6 +8,8 @@ import torch.optim.lr_scheduler as sched
 import data
 from model import Net
 from model_triangle import Net_Triangle
+from model_full import Net_Triangle
+
 import utils
 import numpy as np
 import matplotlib.pyplot as plt
@@ -26,9 +28,9 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         for data, labels in dataloader:
             data = data.to(device)
             if model is not None:
-                if hasattr(model, 'forward_features'):
+                if hasattr(model, 'features_extract'):
                     print("Extracting model features")
-                    features = model.forward_features(data)
+                    features = model.features_extract(data)
                 else:
                     print("Extracting conv features")
                     features = model.conv1(data)
@@ -140,43 +142,48 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'softwta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)
 
-    unsup_optimizer = TensorLRSGD([
-        {"params": model.conv1.parameters(), "lr": 0.08, },  # SGD does descent, so set lr to negative
-        {"params": model.conv2.parameters(), "lr": 0.005, }
-    ], lr=0)
-    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    # unsup_optimizer = TensorLRSGD([
+    #     {"params": model.conv1.parameters(), "lr": 0.08, },  # SGD does descent, so set lr to negative
+    #     {"params": model.conv2.parameters(), "lr": 0.005, }
+    # ], lr=0)
+    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
+    unsup_optimizer = optim.SGD(hebb_params, lr=0.01)
+    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=32,
-                                          whiten_lvl=None)
+                                          whiten_lvl=1e-1)
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for i, data in enumerate(trn_set, 0):
-        inputs, _ = data
-        inputs = inputs.to(device)
-        # zero the parameter gradients
-        unsup_optimizer.zero_grad()
-        # forward + update computation
-        with torch.no_grad():
-            outputs = model(inputs)
-        for layer in [model.conv1, model.conv2]:
-            if hasattr(layer, 'local_update'):
-                layer.local_update()
-        # optimize
-        unsup_optimizer.step()
-        unsup_lr_scheduler.step()
+    for epoch in range(5):
 
-    print("Visualizing Filters")
-    model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
-    model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
+        for i, data in enumerate(trn_set, 0):
+            inputs, _ = data
+            inputs = inputs.to(device)
+            # zero the parameter gradients
+            unsup_optimizer.zero_grad()
+            # forward + update computation
+            with torch.no_grad():
+                outputs = model(inputs)
+            for layer in [model.conv1, model.conv2]:
+                if hasattr(layer, 'local_update'):
+                    layer.local_update()
+            # optimize
+            unsup_optimizer.step()
+            # unsup_lr_scheduler.step()
+        print("Visualizing Filters")
+        model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+        model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
+
+
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
     print("Classifier")
@@ -187,6 +194,13 @@ if __name__ == "__main__":
     model.conv2.eval()
     model.bn1.eval()
     model.bn2.eval()
+
+    model.conv3.requires_grad = False
+    model.conv4.requires_grad = False
+    model.conv3.eval()
+    model.conv4.eval()
+    model.bn3.eval()
+    model.bn4.eval()
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     for epoch in range(50):

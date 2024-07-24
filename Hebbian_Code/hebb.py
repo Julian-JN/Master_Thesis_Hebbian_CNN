@@ -31,7 +31,7 @@ class HebbianConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0,
                  w_nrm=False, bias=False, act=nn.Identity(),
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
-                 contrast=1., uniformity=False, alpha=1., wta_competition='filter',
+                 contrast=1., uniformity=False, alpha=1., wta_competition='similarity_filter',
                  lateral_competition="filter",
                  lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1):
         """
@@ -82,43 +82,6 @@ class HebbianConv2d(nn.Module):
 
         self.prune_rate = prune_rate  # 99% of connections are pruned
         self.t_invert = torch.tensor(t_invert)
-
-    def generate_mask(self):
-        return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
-
-    def cos_sim2d(self, x):
-        # print(x.shape)
-        # print(w.shape)
-        # Unfold the input
-        w = self.weight
-        x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-        # x_unf shape: [batch_size, C*k*k, H*W]
-        batch_size, channels_x_kernel, hw = x_unf.shape
-        out_channels, _, kernel_h, kernel_w = w.shape
-        # Reshape weights
-        w_reshaped = w.view(out_channels, -1)  # Shape: [out_channels, C*k*k]
-        # Reshape x_unf for batch matrix multiplication
-        x_unf = x_unf.transpose(1, 2).reshape(batch_size * hw, channels_x_kernel)
-        # Compute dot product
-        dot_product = torch.matmul(x_unf, w_reshaped.t())  # Shape: [batch_size*H*W, out_channels]
-        # Compute norms
-        norm_x = torch.norm(x_unf, p=2, dim=1, keepdim=True)  # Shape: [batch_size*H*W, 1]
-        norm_w = torch.norm(w_reshaped, p=2, dim=1, keepdim=True)  # Shape: [out_channels, 1]
-        # Avoid division by zero
-        norm_x[norm_x == 0] = 1e-8
-        norm_w[norm_w == 0] = 1e-8
-        # Compute cosine similarity
-        cosine_similarity = dot_product / (norm_x * norm_w.t())
-        # Reshape to match the original output shape
-        out_shape = (batch_size,
-                     (x.size(2) - self.kernel_size[0]) // self.stride[0] + 1,
-                     (x.size(3) - self.kernel_size[1]) // self.stride[1] + 1,
-                     out_channels)
-        cosine_similarity = cosine_similarity.view(*out_shape)
-        # Permute to get [batch_size, out_channels, H, W]
-        cosine_similarity = cosine_similarity.permute(0, 3, 1, 2)
-
-        return cosine_similarity
 
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
@@ -232,56 +195,60 @@ class HebbianConv2d(nn.Module):
 
         if self.mode == self.MODE_WTA:
             with torch.no_grad():
-                # Input shape: [B, C, H, W]
-                # Weight shape: [OC, C, KH, KW]
-                # weighted_input shape: [B, OC, OH, OW]
+                # Unfold the input tensor
+                x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
+                x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
+                y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
+                batch_size, hw, in_features = x_unf.shape
+                _, h, w, out_channels = y_unf.shape
+                y_unf_flat = y_unf.reshape(batch_size * hw, out_channels)
 
-                B, OC, OH, OW = y.shape
                 if self.wta_competition == 'filter':
-                    topk_values, _ = y.view(B, OC, -1).topk(self.top_k, dim=1, largest=True, sorted=False)
-                    y_mask = (y >= topk_values[:, :, -1:, None, None]).float()
+                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    y_mask = (y_unf_flat >= topk_values[..., -1, None]).float()
                 elif self.wta_competition == 'spatial':
-                    topk_values, _ = y.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
-                                                                              sorted=False)
-                    y_mask = (y >= topk_values[:, None, :, -1].view(B, 1, OH, OW)).float()
+                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    y_mask = (y_unf_flat >= topk_values[-1, :]).float()
                 elif self.wta_competition == 'combined':
-                    topk_filter, _ = y.view(B, OC, -1).topk(self.top_k, dim=1, largest=True, sorted=False)
-                    topk_spatial, _ = y.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
-                                                                               sorted=False)
-                    y_mask = ((y >= topk_filter[:, :, -1:, None, None]) |
-                              (y >= topk_spatial[:, None, :, -1].view(B, 1, OH, OW))).float()
+                    topk_filter, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                    topk_spatial, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
+                    y_mask = ((y_unf_flat >= topk_filter[..., -1, None]) | (y_unf_flat >= topk_spatial[-1, :])).float()
                 elif self.wta_competition in ['similarity_filter', 'similarity_spatial']:
                     similarity_cos = self.cos_sim2d(x)
+                    similarity = similarity_cos.permute(0, 2, 3, 1).reshape(-1, self.out_channels)
+                    # similarity = torch.matmul(x_unf.reshape(-1, in_features), weight_unf.t())
                     if self.wta_competition == 'similarity_filter':
-                        topk_similarity, _ = similarity_cos.view(B, OC, -1).topk(self.top_k, dim=1, largest=True,
-                                                                                 sorted=False)
-                        y_mask = (similarity_cos >= topk_similarity[:, :, -1:, None, None]).float()
+                        topk_similarity, _ = similarity.topk(self.top_k, dim=-1, largest=True, sorted=False)
+                        y_mask = (similarity >= topk_similarity[..., -1, None]).float()
                     else:  # similarity_spatial
-                        topk_similarity, _ = similarity_cos.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
-                                                                                      sorted=False)
-                        y_mask = (similarity_cos >= topk_similarity[:, None, :, -1].view(B, 1, OH, OW)).float()
+                        topk_similarity, _ = similarity.topk(self.top_k, dim=0, largest=True, sorted=False)
+                        y_mask = (similarity >= topk_similarity[-1, :]).float()
                 else:
                     raise ValueError(f"Unknown WTA competition mode: {self.wta_competition}")
+
                 self.binary_mask = self.generate_mask()
+                # Apply mask and normalize
+                # y_masked = y_unf_flat * y_mask
                 # Global layer Normalization
-                y_sum = y_mask.sum(dim=(0, 2, 3), keepdim=True)
+                y_sum = y_mask.sum(dim=0, keepdim=True)
                 y_sum[y_sum == 0] = 1.0  # Avoid division by zero
-                # Compute x_avg using masked activations
-                x_avg = F.conv_transpose2d(y_mask, x.transpose(0, 1), stride=self.stride, padding=self.padding,
-                                           output_padding=0)
-                x_avg = x_avg.sum(dim=0) / y_sum.squeeze()
+                # y_normalized = y_masked / y_sum
+                # Local Normalization
+                # self.y_avg = self.y_avg * 0.9 + y_masked.mean(dim=0) * 0.1  # Exponential moving average
+                # y_local_norm = y_masked / (self.y_avg + 1e-5)  # Add small epsilon to prevent division by zero
+
+                # Initialize lateral weights if they don't exist
+                # y_inhibited = self.combined_lateral_inhibition(y_normalized, out_channels, hw)
+
+                # Compute x_avg using inhibited activations
+                x_avg = torch.mm(y_mask.t(), x_unf.reshape(-1, in_features)) / y_sum.t()
                 # Mask for winning neurons only
-                winner_mask = (y_sum.squeeze() > 0).float().view(OC, 1, 1, 1)
+                winner_mask = (y_sum > 0).float().view(self.out_channels, 1)
                 # Compute the update: Apply the winner_mask to ensure non-winners do not update their weights
-                update = winner_mask * (x_avg - self.weight)
-                # L1 normalization of weights
-                nc = torch.abs(update).amax()
-                update.div_(nc + 1e-30)
-                # Apply binary mask and update delta_w
-                self.delta_w += (update * self.binary_mask)
-                # y_mask shape: [B, OC, OH, OW]
-                # x_avg shape: [OC, C, KH, KW]
-                # update shape: [OC, C, KH, KW]
+                update = winner_mask * (x_avg - self.weight.view(self.out_channels, -1))
+                update.div_(torch.abs(update).amax() + 1e-30)
+                # Reshape the update to match the weight shape
+                self.delta_w += (update.reshape_as(self.weight) * self.binary_mask)
 
         if self.mode == self.MODE_BCM:
             with torch.no_grad():
@@ -335,6 +302,43 @@ class HebbianConv2d(nn.Module):
             # Normalization
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
+
+    def generate_mask(self):
+        return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
+
+    def cos_sim2d(self, x):
+        # print(x.shape)
+        # print(w.shape)
+        # Unfold the input
+        w = self.weight
+        x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
+        # x_unf shape: [batch_size, C*k*k, H*W]
+        batch_size, channels_x_kernel, hw = x_unf.shape
+        out_channels, _, kernel_h, kernel_w = w.shape
+        # Reshape weights
+        w_reshaped = w.view(out_channels, -1)  # Shape: [out_channels, C*k*k]
+        # Reshape x_unf for batch matrix multiplication
+        x_unf = x_unf.transpose(1, 2).reshape(batch_size * hw, channels_x_kernel)
+        # Compute dot product
+        dot_product = torch.matmul(x_unf, w_reshaped.t())  # Shape: [batch_size*H*W, out_channels]
+        # Compute norms
+        norm_x = torch.norm(x_unf, p=2, dim=1, keepdim=True)  # Shape: [batch_size*H*W, 1]
+        norm_w = torch.norm(w_reshaped, p=2, dim=1, keepdim=True)  # Shape: [out_channels, 1]
+        # Avoid division by zero
+        norm_x[norm_x == 0] = 1e-8
+        norm_w[norm_w == 0] = 1e-8
+        # Compute cosine similarity
+        cosine_similarity = dot_product / (norm_x * norm_w.t())
+        # Reshape to match the original output shape
+        out_shape = (batch_size,
+                     (x.size(2) - self.kernel_size[0]) // self.stride[0] + 1,
+                     (x.size(3) - self.kernel_size[1]) // self.stride[1] + 1,
+                     out_channels)
+        cosine_similarity = cosine_similarity.view(*out_shape)
+        # Permute to get [batch_size, out_channels, H, W]
+        cosine_similarity = cosine_similarity.permute(0, 3, 1, 2)
+
+        return cosine_similarity
 
     def lateral_inhibition_within_filter(self, y_normalized, out_channels, hw):
         # y_normalized shape is [50176, 96], so hw = 50176 and out_channels = 96

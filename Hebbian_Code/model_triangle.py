@@ -29,20 +29,20 @@ class Triangle(nn.Module):
 
 class Net_Triangle(nn.Module):
     def __init__(self, hebb_params=None):
-        super().__init__()
+        super(Net_Triangle, self).__init__()
 
         if hebb_params is None: hebb_params = default_hebb_params
 
         # A single convolutional layer
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = HebbianConv2d(3, 96, 5, 1, **hebb_params)
+        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params)
         # self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.pool = nn.MaxPool2d(2)
 
         # Final fully-connected 2-layer classifier
-        hidden_shape = self.get_hidden_shape()
+        # hidden_shape = self.get_hidden_shape()
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianConv2d(96, 128, 3, 1, **hebb_params, t_invert=0.65)
+        self.conv2 = HebbianConv2d(in_channels=96, out_channels=128, kernel_size=3, stride=1, **hebb_params, t_invert=0.65)
         self.flatten = nn.Flatten()
         self.fc1 = nn.Linear(128 * 12 * 12, 10)
         self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 128 * 12 * 12)

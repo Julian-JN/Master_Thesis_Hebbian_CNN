@@ -28,12 +28,12 @@ class HebbianConv2d(nn.Module):
     MODE_LATERAL_INHIBITION = "lateral"
     MODE_BCM = 'bcm'
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation = 1, padding = 0,
-                 w_nrm=True, bias=False, act=nn.Identity(),
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0,
+                 w_nrm=False, bias=False, act=nn.Identity(),
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
-                 contrast=1., uniformity=False, alpha=1., wta_competition='similarity_filter',
+                 contrast=1., uniformity=False, alpha=1., wta_competition='filter',
                  lateral_competition="filter",
-                 lateral_inhibition_strength=0.01, top_k=1, prune_rate = 0, t_invert = 1):
+                 lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1):
         """
 
 		:param out_channels: output channels of the convolutional kernel
@@ -49,10 +49,8 @@ class HebbianConv2d(nn.Module):
 		:param contrast: coefficient that rescales negative compared to positive updates in contrastive-type learning
 		:param uniformity: whether to use uniformity weighting in contrastive-type learning.
 		:param alpha: weighting coefficient between hebbian and backprop updates (0 means fully backprop, 1 means fully hebbian).
-
 		"""
-
-        super().__init__()
+        super(HebbianConv2d, self).__init__()
         self.mode = mode
         self.out_channels = out_channels
         self.in_channels = in_channels
@@ -62,7 +60,7 @@ class HebbianConv2d(nn.Module):
         self.padding = padding
 
         weight_range = 25 / math.sqrt((in_channels) * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)), requires_grad=True)
+        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)))
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -130,7 +128,7 @@ class HebbianConv2d(nn.Module):
 		This function provides the logic for combining input x and weight w
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
-        return torch.conv2d(x, self.weight, None, self.stride, 0, self.dilation)
+        return F.conv2d(x, self.weight, None, self.stride, 0, self.dilation, groups=1)
 
     def compute_activation(self, x):
         w = self.weight
@@ -142,7 +140,8 @@ class HebbianConv2d(nn.Module):
 
     def forward(self, x):
         y = self.compute_activation(x)
-        if self.training and self.alpha != 0: self.compute_update(x, y)
+        if self.training and self.alpha != 0:
+            self.compute_update(x, y)
         return y
 
     def compute_update(self, x, y):
@@ -233,60 +232,56 @@ class HebbianConv2d(nn.Module):
 
         if self.mode == self.MODE_WTA:
             with torch.no_grad():
-                # Unfold the input tensor
-                x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-                x_unf = x_unf.permute(0, 2, 1)  # Shape: [batch_size, H*W, C*k*k]
-                y_unf = y.permute(0, 2, 3, 1).contiguous()  # Shape: [batch_size, H, W, out_channels]
-                batch_size, hw, in_features = x_unf.shape
-                _, h, w, out_channels = y_unf.shape
-                y_unf_flat = y_unf.reshape(batch_size * hw, out_channels)
+                # Input shape: [B, C, H, W]
+                # Weight shape: [OC, C, KH, KW]
+                # weighted_input shape: [B, OC, OH, OW]
 
+                B, OC, OH, OW = y.shape
                 if self.wta_competition == 'filter':
-                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                    y_mask = (y_unf_flat >= topk_values[..., -1, None]).float()
+                    topk_values, _ = y.view(B, OC, -1).topk(self.top_k, dim=1, largest=True, sorted=False)
+                    y_mask = (y >= topk_values[:, :, -1:, None, None]).float()
                 elif self.wta_competition == 'spatial':
-                    topk_values, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
-                    y_mask = (y_unf_flat >= topk_values[-1, :]).float()
+                    topk_values, _ = y.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
+                                                                              sorted=False)
+                    y_mask = (y >= topk_values[:, None, :, -1].view(B, 1, OH, OW)).float()
                 elif self.wta_competition == 'combined':
-                    topk_filter, _ = y_unf_flat.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                    topk_spatial, _ = y_unf_flat.topk(self.top_k, dim=0, largest=True, sorted=False)
-                    y_mask = ((y_unf_flat >= topk_filter[..., -1, None]) | (y_unf_flat >= topk_spatial[-1, :])).float()
+                    topk_filter, _ = y.view(B, OC, -1).topk(self.top_k, dim=1, largest=True, sorted=False)
+                    topk_spatial, _ = y.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
+                                                                               sorted=False)
+                    y_mask = ((y >= topk_filter[:, :, -1:, None, None]) |
+                              (y >= topk_spatial[:, None, :, -1].view(B, 1, OH, OW))).float()
                 elif self.wta_competition in ['similarity_filter', 'similarity_spatial']:
                     similarity_cos = self.cos_sim2d(x)
-                    similarity = similarity_cos.permute(0, 2, 3, 1).reshape(-1, self.out_channels)
-                    # similarity = torch.matmul(x_unf.reshape(-1, in_features), weight_unf.t())
                     if self.wta_competition == 'similarity_filter':
-                        topk_similarity, _ = similarity.topk(self.top_k, dim=-1, largest=True, sorted=False)
-                        y_mask = (similarity >= topk_similarity[..., -1, None]).float()
+                        topk_similarity, _ = similarity_cos.view(B, OC, -1).topk(self.top_k, dim=1, largest=True,
+                                                                                 sorted=False)
+                        y_mask = (similarity_cos >= topk_similarity[:, :, -1:, None, None]).float()
                     else:  # similarity_spatial
-                        topk_similarity, _ = similarity.topk(self.top_k, dim=0, largest=True, sorted=False)
-                        y_mask = (similarity >= topk_similarity[-1, :]).float()
+                        topk_similarity, _ = similarity_cos.view(B, -1, OH * OW).topk(self.top_k, dim=2, largest=True,
+                                                                                      sorted=False)
+                        y_mask = (similarity_cos >= topk_similarity[:, None, :, -1].view(B, 1, OH, OW)).float()
                 else:
                     raise ValueError(f"Unknown WTA competition mode: {self.wta_competition}")
-
                 self.binary_mask = self.generate_mask()
-                # Apply mask and normalize
-                # y_masked = y_unf_flat * y_mask
                 # Global layer Normalization
-                y_sum = y_mask.sum(dim=0, keepdim=True)
+                y_sum = y_mask.sum(dim=(0, 2, 3), keepdim=True)
                 y_sum[y_sum == 0] = 1.0  # Avoid division by zero
-                # y_normalized = y_masked / y_sum
-                # Local Normalization
-                # self.y_avg = self.y_avg * 0.9 + y_masked.mean(dim=0) * 0.1  # Exponential moving average
-                # y_local_norm = y_masked / (self.y_avg + 1e-5)  # Add small epsilon to prevent division by zero
-                # Initialize lateral weights if they don't exist
-                # y_inhibited = self.combined_lateral_inhibition(y_normalized, out_channels, hw)
-                # Compute x_avg using inhibited activations
-                x_avg = torch.mm(y_mask.t(), x_unf.reshape(-1, in_features))/ y_sum.t()
+                # Compute x_avg using masked activations
+                x_avg = F.conv_transpose2d(y_mask, x.transpose(0, 1), stride=self.stride, padding=self.padding,
+                                           output_padding=0)
+                x_avg = x_avg.sum(dim=0) / y_sum.squeeze()
                 # Mask for winning neurons only
-                winner_mask = (y_sum > 0).float().view(self.out_channels, 1)
+                winner_mask = (y_sum.squeeze() > 0).float().view(OC, 1, 1, 1)
                 # Compute the update: Apply the winner_mask to ensure non-winners do not update their weights
-                update = winner_mask * (x_avg - self.weight.view(self.out_channels, -1))
+                update = winner_mask * (x_avg - self.weight)
                 # L1 normalization of weights
                 nc = torch.abs(update).amax()
                 update.div_(nc + 1e-30)
-                # Reshape the update to match the weight shape
-                self.delta_w += (update.reshape_as(self.weight)*self.binary_mask)
+                # Apply binary mask and update delta_w
+                self.delta_w += (update * self.binary_mask)
+                # y_mask shape: [B, OC, OH, OW]
+                # x_avg shape: [OC, C, KH, KW]
+                # update shape: [OC, C, KH, KW]
 
         if self.mode == self.MODE_BCM:
             with torch.no_grad():
@@ -318,27 +313,28 @@ class HebbianConv2d(nn.Module):
                 self.delta_w += update.reshape_as(self.weight)
 
         if self.mode == self.MODE_SOFTWTA:
-            with torch.no_grad():
-                batch_size, out_channels, height_out, width_out = y.shape
-                # Compute soft WTA using softmax
-                flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
-                flat_softwta_activs = F.softmax(self.t_invert * flat_weighted_inputs, dim=0)
-                flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
-                # Find winning neurons
-                win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
-                competing_idx = torch.arange(flat_weighted_inputs.size(1))
-                # Turn winner neurons' activations back to hebbian
-                flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
-                # Reshape softwta activations
-                softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,1)
-                # Compute yx using conv2d
-                yx = F.conv2d(x.transpose(0, 1),softwta_activs.transpose(0, 1),stride=self.dilation,dilation=self.stride).transpose(0, 1)                # Compute yu
-                yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
-                # Compute update
-                update = yx - yu.view(-1, 1, 1, 1) * self.weight
-                # Normalization
-                update.div_(torch.abs(update).amax() + 1e-30)
-                self.delta_w += update
+            batch_size, out_channels, height_out, width_out = y.shape
+            # Compute soft WTA using softmax
+            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+            flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
+            flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
+            # Find winning neurons
+            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
+            competing_idx = torch.arange(flat_weighted_inputs.size(1))
+            # Turn winner neurons' activations back to hebbian
+            flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
+            # Reshape softwta activations
+            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,
+                                                                                                                 1)
+            # Compute yx using conv2d
+            yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
+                          dilation=self.stride, groups=1).transpose(0, 1)  # Compute yu
+            yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
+            # Compute update
+            update = yx - yu.view(-1, 1, 1, 1) * self.weight
+            # Normalization
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
 
     def lateral_inhibition_within_filter(self, y_normalized, out_channels, hw):
         # y_normalized shape is [50176, 96], so hw = 50176 and out_channels = 96
@@ -397,4 +393,3 @@ class HebbianConv2d(nn.Module):
         else:
             self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
         self.delta_w.zero_()
-

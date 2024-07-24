@@ -46,12 +46,11 @@ def train_one_epoch(model, criterion, optimizer, train_loader, device, zca, tboa
         optimizer.zero_grad()
         outputs = model(inputs)
         loss = criterion(outputs, labels)
+        loss.backward()
+        optimizer.step()
         epoch_loss += loss.sum().item()
         epoch_hits += (torch.max(outputs, dim=1)[1] == labels).int().sum().item()
         count += labels.shape[0]
-
-        loss.backward()
-        optimizer.step()
 
         for n, p in model.named_parameters():
             if p.grad is None:

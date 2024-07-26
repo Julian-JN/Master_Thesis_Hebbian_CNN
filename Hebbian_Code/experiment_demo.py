@@ -142,7 +142,7 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)
@@ -169,7 +169,7 @@ if __name__ == "__main__":
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(5):
+    for epoch in range(3):
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
             inputs = inputs.to(device)

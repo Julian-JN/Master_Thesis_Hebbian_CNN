@@ -142,7 +142,7 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)
@@ -155,8 +155,8 @@ if __name__ == "__main__":
     # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
     hebb_params = [
-        {'params': model.conv1.parameters(), 'lr': 0.01},
-        {'params': model.conv2.parameters(), 'lr': 0.01},
+        {'params': model.conv1.parameters(), 'lr': 0.1},
+        {'params': model.conv2.parameters(), 'lr': 0.1},
         {'params': model.conv3.parameters(), 'lr': 0.1}
     ]
     unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs

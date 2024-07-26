@@ -84,22 +84,6 @@ class Net_Triangle(nn.Module):
         x = self.fc1(self.dropout(x))
         return x
 
-    # def forward_hebbian(self, x):
-    #     x = self.forward_features(x)
-    #     x = self.bn2(x)
-    #     x = Triangle(power=1.4)(self.conv2(x))
-    #     return x
-    #
-    #
-    # def hebbian_train(self, dataloader, device):
-    #     self.train()
-    #     for inputs, _ in tqdm(dataloader, ncols=80):
-    #         inputs = inputs.to(device)
-    #         _ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
-    #         for layer in [self.conv1, self.conv2]:
-    #             if isinstance(layer, HebbianConv2d):
-    #                 layer.local_update()
-
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 12 filters (or less if there are fewer)
         tensor = tensor[:25]

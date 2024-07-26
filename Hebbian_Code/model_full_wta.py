@@ -35,26 +35,27 @@ class Net_Triangle(nn.Module):
 
         # A single convolutional layer
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = HebbianConv2d(in_channels=3, out_channels=100, kernel_size=5, stride=1, **hebb_params, padding=0)
-        self.pool1 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=0)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ1 = Triangle(power=1.)
 
-
-        self.bn2 = nn.BatchNorm2d(100, affine=False)
-        self.conv2 = HebbianConv2d(in_channels=100, out_channels=196, kernel_size=3, stride=1, **hebb_params, t_invert=0.65, padding=0)
-        self.pool2 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.bn2 = nn.BatchNorm2d(96, affine=False)
+        self.conv2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=3, stride=1, **hebb_params,
+                                   t_invert=0.65, padding=0)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ2 = Triangle(power=1.)
 
-        self.bn3 = nn.BatchNorm2d(196, affine=False)
-        self.conv3 = HebbianConv2d(in_channels=196, out_channels=400, kernel_size=3, stride=1, **hebb_params,t_invert=0.25, padding=0)
-        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2)
+        self.bn3 = nn.BatchNorm2d(384, affine=False)
+        self.conv3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=3, stride=1, **hebb_params,
+                                   t_invert=0.25, padding=0)
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
         self.activ3 = Triangle(power=1.)
 
 
         self.flatten = nn.Flatten()
         # Final fully-connected layer classifier
-        self.fc1 = nn.Linear(1600, 10)
-        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 1600)
+        self.fc1 = nn.Linear(6144, 10)
+        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 6144)
         self.dropout = nn.Dropout(0.5)
         # self.fc2 = nn.Linear(300, 10)
 
@@ -83,22 +84,6 @@ class Net_Triangle(nn.Module):
         x = self.flatten(x)
         x = self.fc1(self.dropout(x))
         return x
-
-    # def forward_hebbian(self, x):
-    #     x = self.forward_features(x)
-    #     x = self.bn2(x)
-    #     x = Triangle(power=1.4)(self.conv2(x))
-    #     return x
-    #
-    #
-    # def hebbian_train(self, dataloader, device):
-    #     self.train()
-    #     for inputs, _ in tqdm(dataloader, ncols=80):
-    #         inputs = inputs.to(device)
-    #         _ = self.forward_hebbian(inputs)  # Only forward pass through conv layers to trigger Hebbian updates
-    #         for layer in [self.conv1, self.conv2]:
-    #             if isinstance(layer, HebbianConv2d):
-    #                 layer.local_update()
 
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 12 filters (or less if there are fewer)

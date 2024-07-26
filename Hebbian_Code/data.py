@@ -154,6 +154,7 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
 
         # Now apply the full transform including ZCA to the datasets
         full_transform = T.Compose([
+            T.RandomHorizontalFlip(),
             T.Resize(32),
             T.ToTensor(),
             ZCATransformation(zca),

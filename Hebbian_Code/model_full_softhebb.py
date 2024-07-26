@@ -35,23 +35,26 @@ class Net_Triangle(nn.Module):
 
         # A single convolutional layer
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, prune_rate=0.50)
-        self.pool = nn.MaxPool2d(2)
+        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=2)
+        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        self.activ1 = Triangle(power=0.7)
+
 
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianConv2d(in_channels=96, out_channels=128, kernel_size=3, stride=1, **hebb_params, t_invert=0.65, prune_rate=0.90)
+        self.conv2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=3, stride=1, **hebb_params, t_invert=0.65, padding=1)
+        self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        self.activ2 = Triangle(power=1.4)
 
-        self.bn3 = nn.BatchNorm2d(128, affine=False)
-        self.conv3 = HebbianConv2d(in_channels=128, out_channels=192, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.65, prune_rate=0.95)
+        self.bn3 = nn.BatchNorm2d(384, affine=False)
+        self.conv3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=3, stride=1, **hebb_params,t_invert=0.25, padding=1)
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+        self.activ3 = Triangle(power=1.)
 
-        self.bn4 = nn.BatchNorm2d(192, affine=False)
-        self.conv4 = HebbianConv2d(in_channels=192, out_channels=256, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.65, prune_rate=0.95)
+
         self.flatten = nn.Flatten()
         # Final fully-connected layer classifier
-        self.fc1 = nn.Linear(256 * 3 * 3, 10)
-        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 256 * 3 * 3)
+        self.fc1 = nn.Linear(24576, 10)
+        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
         # self.fc2 = nn.Linear(300, 10)
 
@@ -61,28 +64,22 @@ class Net_Triangle(nn.Module):
         return out
 
     def forward_features(self, x):
-        x = self.bn1(x)
-        x = self.pool(Triangle(power=0.7)(self.conv1(x)))
+        x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
+
         return x
 
     def features_extract(self, x):
         x = self.forward_features(x)
-        x = self.bn2(x)
-        x = Triangle(power=1.4)(self.conv2(x))
-        x = self.bn3(x)
-        x = self.pool(Triangle(power=1.1)(self.conv3(x)))
-        x = self.bn4(x)
-        x = Triangle(power=1)(self.conv4(x))
+        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
+        # block 3
+        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         return x
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.bn2(x)
-        x = Triangle(power=1.4)(self.conv2(x))
-        x = self.bn3(x)
-        x = self.pool(Triangle(power=1.1)(self.conv3(x)))
-        x = self.bn4(x)
-        x = Triangle(power=1)(self.conv4(x))
+        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
+        # block 3
+        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         x = self.flatten(x)
         x = self.fc1(self.dropout(x))
         return x

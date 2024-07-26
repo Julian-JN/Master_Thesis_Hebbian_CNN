@@ -7,8 +7,8 @@ import torch.optim.lr_scheduler as sched
 
 import data
 from model import Net
-from model_triangle import Net_Triangle
-from model_full import Net_Triangle
+from model_full_wta import Net_Triangle
+# from model_full_softhebb import Net_Triangle
 
 import utils
 import numpy as np
@@ -142,29 +142,34 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'wta', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)
 
     # unsup_optimizer = TensorLRSGD([
-    #     {"params": model.conv1.parameters(), "lr": 0.08, },  # SGD does descent, so set lr to negative
-    #     {"params": model.conv2.parameters(), "lr": 0.005, }
+    #     {"params": model.conv1.parameters(), "lr": 0.08, },
+    #     {"params": model.conv2.parameters(), "lr": 0.005, },
+    #     {"params": model.conv3.parameters(), "lr": 0.01, }
     # ], lr=0)
-    hebb_params = list(model.conv1.parameters()) + list(model.conv2.parameters()) + list(model.conv3.parameters()) + list(model.conv4.parameters())
-    unsup_optimizer = optim.SGD(hebb_params, lr=0.01)
     # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+
+    hebb_params = [
+        {'params': model.conv1.parameters(), 'lr': 0.01},
+        {'params': model.conv2.parameters(), 'lr': 0.01},
+        {'params': model.conv3.parameters(), 'lr': 0.1}
+    ]
+    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
-    trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=32,
-                                          whiten_lvl=1e-1)
+    trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
+                                          whiten_lvl=1e-3)
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0
     for epoch in range(5):
-
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
             inputs = inputs.to(device)
@@ -173,15 +178,15 @@ if __name__ == "__main__":
             # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
-            for layer in [model.conv1, model.conv2]:
+            for layer in [model.conv1, model.conv2, model.conv3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             # optimize
             unsup_optimizer.step()
             # unsup_lr_scheduler.step()
-        print("Visualizing Filters")
-        model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
-        model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
+    print("Visualizing Filters")
+    model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
 
 
     # Supervised training of classifier
@@ -196,13 +201,10 @@ if __name__ == "__main__":
     model.bn2.eval()
 
     model.conv3.requires_grad = False
-    model.conv4.requires_grad = False
     model.conv3.eval()
-    model.conv4.eval()
     model.bn3.eval()
-    model.bn4.eval()
     print("Visualizing Class separation")
-    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+    visualize_data_clusters(tst_set, model=model, method='umap', dim=3)
     for epoch in range(50):
         model.fc1.train()
         model.dropout.train()
@@ -222,34 +224,33 @@ if __name__ == "__main__":
             sup_optimizer.step()
             # compute training statistics
             running_loss += loss.item()
-            if epoch % 10 == 0 or epoch == 49:
-                total += labels.size(0)
-                _, predicted = torch.max(outputs.data, 1)
-                correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+            _, predicted = torch.max(outputs.data, 1)
+            correct += (predicted == labels).sum().item()
         # Evaluation on test set
-        if epoch % 10 == 0 or epoch == 1:
-            print(f'Accuracy of the network on the train images: {100 * correct // total} %')
-            print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
 
-            # on the test set
-            model.eval()
-            running_loss = 0.
-            correct = 0
-            total = 0
-            # since we're not training, we don't need to calculate the gradients for our outputs
-            with torch.no_grad():
-                for data in tst_set:
-                    images, labels = data
-                    images = images.to(device)
-                    labels = labels.to(device)
-                    # calculate outputs by running images through the network
-                    outputs = model(images)
-                    # the class with the highest energy is what we choose as prediction
-                    _, predicted = torch.max(outputs.data, 1)
-                    total += labels.size(0)
-                    correct += (predicted == labels).sum().item()
-                    loss = criterion(outputs, labels)
-                    running_loss += loss.item()
+        print(f'Accuracy of the network on the train images: {100 * correct // total} %')
+        print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
 
-            print(f'Accuracy of the network on the test images: {100 * correct / total} %')
-            print(f'test loss: {running_loss / total:.3f}')
+        # on the test set
+        model.eval()
+        running_loss = 0.
+        correct = 0
+        total = 0
+        # since we're not training, we don't need to calculate the gradients for our outputs
+        with torch.no_grad():
+            for data in tst_set:
+                images, labels = data
+                images = images.to(device)
+                labels = labels.to(device)
+                # calculate outputs by running images through the network
+                outputs = model(images)
+                # the class with the highest energy is what we choose as prediction
+                _, predicted = torch.max(outputs.data, 1)
+                total += labels.size(0)
+                correct += (predicted == labels).sum().item()
+                loss = criterion(outputs, labels)
+                running_loss += loss.item()
+
+        print(f'Accuracy of the network on the test images: {100 * correct / total} %')
+        print(f'test loss: {running_loss / total:.3f}')

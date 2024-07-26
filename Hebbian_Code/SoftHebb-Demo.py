@@ -53,7 +53,7 @@ class SoftHebbConv2d(nn.Module):
         self.t_invert = torch.tensor(t_invert)
 
     def forward(self, x):
-        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
         # perform conv, obtain weighted input u \in [B, OC, OH, OW]
         weighted_input = F.conv2d(x, self.weight, None, self.stride, 0, self.dilation, self.groups)
 
@@ -99,32 +99,32 @@ class DeepSoftHebb(nn.Module):
         super(DeepSoftHebb, self).__init__()
         # block 1
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = SoftHebbConv2d(in_channels=3, out_channels=96, kernel_size=5, t_invert=1,)
+        self.conv1 = SoftHebbConv2d(in_channels=3, out_channels=96, kernel_size=5, padding=2, t_invert=1,)
         self.activ1 = Triangle(power=0.7)
-        self.pool1 = nn.MaxPool2d(2)
+        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
         # block 2
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = SoftHebbConv2d(in_channels=96, out_channels=128, kernel_size=3, t_invert=0.65,)
+        self.conv2 = SoftHebbConv2d(in_channels=96, out_channels=384, kernel_size=3, padding=1, t_invert=0.65,)
         self.activ2 = Triangle(power=1.4)
-        # self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
-        # # block 3
-        # self.bn3 = nn.BatchNorm2d(384, affine=False)
-        # self.conv3 = SoftHebbConv2d(in_channels=384, out_channels=1536, kernel_size=3, padding=1, t_invert=0.25,)
-        # self.activ3 = Triangle(power=1.)
-        # self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+        self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        # block 3
+        self.bn3 = nn.BatchNorm2d(384, affine=False)
+        self.conv3 = SoftHebbConv2d(in_channels=384, out_channels=1536, kernel_size=3, padding=1, t_invert=0.25,)
+        self.activ3 = Triangle(power=1.)
+        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
         # block 4
         self.flatten = nn.Flatten()
-        self.classifier = nn.Linear(128*12*12, 10)
-        self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 128*12*12)
+        self.classifier = nn.Linear(24576, 10)
+        self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
 
     def forward(self, x):
         # block 1
         out = self.pool1(self.activ1(self.conv1(self.bn1(x))))
         # block 2
-        out = self.activ2(self.conv2(self.bn2(out)))
+        out = self.pool2(self.activ2(self.conv2(self.bn2(out))))
         # block 3
-        # out = self.pool3(self.activ3(self.conv3(self.bn3(out))))
+        out = self.pool3(self.activ3(self.conv3(self.bn3(out))))
         # block 4
         return self.classifier(self.dropout(self.flatten(out)))
 
@@ -260,24 +260,22 @@ class CustomStepLR(StepLR):
 
 
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
-                            n_components=2, random_state=42, num_batches=80):
+                            n_components=2, random_state=42):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     features_list = []
     labels_list = []
     if model is not None:
         model.eval()
     with torch.no_grad():
-        for batch_idx, (data, labels) in enumerate(dataloader):
-            if num_batches is not None and batch_idx >= num_batches:
-                break
+        for data, labels in dataloader:
             data = data.to(device)
             if model is not None:
-                if hasattr(model, 'forward_features'):
+                if hasattr(model, 'features_extract'):
                     print("Extracting model features")
-                    features = model.forward_features(data)
+                    features = model.features_extract(data)
                 else:
                     print("Extracting conv features")
-                    features = model.pool1(model.activ1(model.conv1(model.bn1(data))))
+                    features = model.conv1(data)
             else:
                 features = data
             features = features.view(features.size(0), -1).cpu().numpy()

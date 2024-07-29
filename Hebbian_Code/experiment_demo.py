@@ -142,7 +142,7 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'basic', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)

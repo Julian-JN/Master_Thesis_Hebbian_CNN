@@ -339,7 +339,7 @@ if __name__ == "__main__":
     sup_lr_scheduler = CustomStepLR(sup_optimizer, nb_epochs=50)
     criterion = nn.CrossEntropyLoss()
 
-    trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=32,
+    trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=None)
 
     # Unsupervised training with SoftHebb

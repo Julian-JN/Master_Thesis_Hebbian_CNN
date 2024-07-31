@@ -59,7 +59,6 @@ class Net_Triangle(nn.Module):
 
     def forward_features(self, x):
         x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
-
         return x
 
     def features_extract(self, x):
@@ -91,7 +90,6 @@ class Net_Triangle(nn.Module):
         for i, ax in enumerate(axes.flat):
             if i < tensor.shape[0]:
                 filter_img = tensor[i]
-
                 # Handle different filter shapes
                 if filter_img.shape[0] == 3:  # RGB filter (3, H, W)
                     filter_img = np.transpose(filter_img, (1, 2, 0))
@@ -103,7 +101,6 @@ class Net_Triangle(nn.Module):
                 ax.imshow(filter_img, cmap='viridis' if filter_img.ndim == 2 else None)
                 ax.set_title(f'Filter {i + 1}')
             ax.axis('off')
-
         plt.tight_layout()
         fig.savefig(path, bbox_inches='tight')
         plt.show()

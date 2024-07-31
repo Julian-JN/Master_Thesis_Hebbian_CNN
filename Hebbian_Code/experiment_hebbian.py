@@ -137,7 +137,6 @@ class TensorLRSGD(optim.SGD):
                         d_p = d_p.add(buf, alpha=momentum)
                     else:
                         d_p = buf
-
                 p.add_(-group['lr'] * d_p)
         return loss
 

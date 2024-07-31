@@ -94,8 +94,8 @@ class HebbianConv2d(nn.Module):
 		This function provides the logic for combining input x and weight w
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
-        if self.padding != 0 and self.padding != None:
-            x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        # if self.padding != 0 and self.padding != None:
+        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=1)
 
     def compute_activation(self, x):
@@ -109,7 +109,7 @@ class HebbianConv2d(nn.Module):
 
     def forward(self, x):
         y = self.compute_activation(x)
-        if self.training and self.alpha != 0:
+        if self.training:
             self.compute_update(x, y)
         return y
 
@@ -217,7 +217,7 @@ class HebbianConv2d(nn.Module):
             # Turn winner neurons' activations back to hebbian
             flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
             # Reshape softwta activations
-            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,1)
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
                           dilation=self.stride, groups=1).transpose(0, 1)  # Compute yu

@@ -57,29 +57,20 @@ class Net_Triangle(nn.Module):
         self.fc1 = nn.Linear(6144, 10)
         self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 6144)
         self.dropout = nn.Dropout(0.5)
-        # self.fc2 = nn.Linear(300, 10)
-
-    def get_hidden_shape(self):
-        self.eval()
-        with torch.no_grad(): out = self.forward_features(torch.ones([1, 3, 32, 32], dtype=torch.float32)).shape[1:]
-        return out
 
     def forward_features(self, x):
         x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
-
         return x
 
     def features_extract(self, x):
         x = self.forward_features(x)
         x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
-        # block 3
         x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         return x
 
     def forward(self, x):
         x = self.forward_features(x)
         x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
-        # block 3
         x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         x = self.flatten(x)
         x = self.fc1(self.dropout(x))
@@ -98,7 +89,6 @@ class Net_Triangle(nn.Module):
         for i, ax in enumerate(axes.flat):
             if i < tensor.shape[0]:
                 filter_img = tensor[i]
-
                 # Handle different filter shapes
                 if filter_img.shape[0] == 3:  # RGB filter (3, H, W)
                     filter_img = np.transpose(filter_img, (1, 2, 0))
@@ -106,11 +96,9 @@ class Net_Triangle(nn.Module):
                     filter_img = filter_img.squeeze()
                 else:  # Multi-channel filter (C, H, W), take mean across channels
                     filter_img = np.mean(filter_img, axis=0)
-
                 ax.imshow(filter_img, cmap='viridis' if filter_img.ndim == 2 else None)
                 ax.set_title(f'Filter {i + 1}')
             ax.axis('off')
-
         plt.tight_layout()
         fig.savefig(path, bbox_inches='tight')
         plt.show()

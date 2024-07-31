@@ -32,7 +32,7 @@ class HebbianConv2d(nn.Module):
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=1., wta_competition='similarity_spatial',
                  lateral_competition="filter",
-                 lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1):
+                 lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1.):
         """
 
 		:param out_channels: output channels of the convolutional kernel
@@ -61,8 +61,8 @@ class HebbianConv2d(nn.Module):
         self.padding_mode = 'reflect'
         self.F_padding = (padding, padding, padding, padding)
 
-        weight_range = 25 / math.sqrt((in_channels) * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.rand((out_channels, in_channels, *self.kernel_size)))
+        weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)))
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -100,8 +100,8 @@ class HebbianConv2d(nn.Module):
 
     def compute_activation(self, x):
         w = self.weight
-        if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
-        if self.presynaptic_weights: w = w * self.compute_presynaptic_competition(w)
+        # if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
+        # if self.presynaptic_weights: w = w * self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         # y = self.act(x)

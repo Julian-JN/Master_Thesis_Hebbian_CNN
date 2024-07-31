@@ -14,7 +14,7 @@ import umap
 
 
 
-default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': False, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
+default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': False, 'k': 50, 'act': nn.Identity(), 'alpha': 1.}
 
 
 class Triangle(nn.Module):

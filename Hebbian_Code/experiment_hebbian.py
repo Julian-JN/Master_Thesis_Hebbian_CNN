@@ -113,13 +113,11 @@ class TensorLRSGD(optim.SGD):
         if closure is not None:
             with torch.enable_grad():
                 loss = closure()
-
         for group in self.param_groups:
             weight_decay = group['weight_decay']
             momentum = group['momentum']
             dampening = group['dampening']
             nesterov = group['nesterov']
-
             for p in group['params']:
                 if p.grad is None:
                     continue
@@ -141,7 +139,7 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'bias': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Triangle(hebb_params=hebb_param)
     model.to(device)
@@ -169,6 +167,7 @@ if __name__ == "__main__":
     # Unsupervised training with SoftHebb
     running_loss = 0.0
     for epoch in range(1):
+        print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
             inputs = inputs.to(device)

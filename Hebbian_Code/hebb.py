@@ -22,9 +22,10 @@ class HebbianConv2d(nn.Module):
     MODE_HPCA = 'hpca'
     MODE_BASIC_HEBBIAN = 'basic'
     MODE_WTA = 'wta'
-    MODE_SOFTWTA = 'softwta'
+    MODE_SOFTWTA = 'soft'
     MODE_BCM = 'bcm'
     MODE_HARDWT = "hard"
+    MODE_PRESYNAPTIC_COMPETITION = "pre"
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0,
                  w_nrm=False, bias=False, act=nn.Identity(),
@@ -61,16 +62,14 @@ class HebbianConv2d(nn.Module):
         self.F_padding = (padding, padding, padding, padding)
 
         weight_range = 25 / math.sqrt((in_channels) * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)))
+        self.weight = nn.Parameter(weight_range * torch.rand((out_channels, in_channels, *self.kernel_size)))
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
-        self.theta_decay = 0.1
-        self.theta = nn.Parameter(torch.zeros(out_channels), requires_grad=False)
+        self.theta_decay = 0.5
+        # self.theta = nn.Parameter(torch.zeros(out_channels), requires_grad=False)
 
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
-
-        self.k = k
         self.top_k = top_k
         self.patchwise = patchwise
         self.contrast = contrast
@@ -84,6 +83,9 @@ class HebbianConv2d(nn.Module):
         self.prune_rate = prune_rate  # 99% of connections are pruned
         self.t_invert = torch.tensor(t_invert)
 
+        self.presynaptic_competition_type = "softmax"
+        self.presynaptic_weights = False  # presynaptic competition in forward pass
+
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
@@ -94,11 +96,12 @@ class HebbianConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         if self.padding != 0 and self.padding != None:
             x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        return F.conv2d(x, self.weight, None, self.stride, 0, self.dilation, groups=1)
+        return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=1)
 
     def compute_activation(self, x):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
+        if self.presynaptic_weights: w = w * self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         # y = self.act(x)
@@ -116,7 +119,7 @@ class HebbianConv2d(nn.Module):
 		resulting weight update is stored in buffer self.delta_w for later use.
 		"""
         if self.mode not in [self.MODE_HPCA, self.MODE_BASIC_HEBBIAN, self.MODE_WTA, self.MODE_BCM, self.MODE_SOFTWTA,
-                             self.MODE_HARDWT]:
+                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION]:
             raise NotImplementedError(
                 "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
 
@@ -159,6 +162,25 @@ class HebbianConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
+        if self.mode == self.MODE_PRESYNAPTIC_COMPETITION:
+            presynaptic_weights_comp = self.compute_presynaptic_competition(self.weight)
+            weight_precomp = self.weight*presynaptic_weights_comp
+            # Compute yx using conv2d with input x
+            yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride, groups=1)
+            # Reshape yx to match the weight shape
+            yx = yx.view(self.weight.shape)
+            # Apply competition to yx
+            yx_competed = yx * presynaptic_weights_comp
+            # Compute y * w
+            y_sum = y.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            yw = y_sum * weight_precomp
+            # Compute update
+            update = yx_competed - yw
+            # Normalization
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
+
         if self.mode == self.MODE_BCM:
             # BCM uses WT Competition
             batch_size, out_channels, height_out, width_out = y.shape
@@ -166,7 +188,7 @@ class HebbianConv2d(nn.Module):
             y_flat = y.transpose(0, 1).reshape(out_channels, -1)
             win_neurons = torch.argmax(y_flat, dim=0)
             wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
-            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0,1)
+            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
             y_wta = y * wta_mask
             # Update theta (sliding threshold) using WTA output
             y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
@@ -208,6 +230,8 @@ class HebbianConv2d(nn.Module):
 
         if self.mode == self.MODE_HARDWT:
             # Compute cosine similarity
+            # presynaptic_weights_comp = self.compute_presynaptic_competition(self.weight)
+            # w = self.weight*presynaptic_weights_comp
             # y = self.cos_sim2d(x)
             batch_size, out_channels, height_out, width_out = y.shape
             # WTA competition using cosine similarity
@@ -291,6 +315,17 @@ class HebbianConv2d(nn.Module):
 
     def generate_mask(self):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
+
+    def compute_presynaptic_competition(self, m):
+        m = 1 / (torch.abs(m) + 1e-6)
+        if self.presynaptic_competition_type == 'linear':
+            return m / (m.sum(dim=0, keepdim=True) + 1e-6)
+        elif self.presynaptic_competition_type == 'softmax':
+            return F.softmax(m, dim=0)
+        elif self.presynaptic_competition_type == 'lp_norm':
+            return F.normalize(m, p=2, dim=0)
+        else:
+            raise ValueError(f"Unknown competition type: {self.competition_type}")
 
     def cos_sim2d(self, x):
         # Unfold the input

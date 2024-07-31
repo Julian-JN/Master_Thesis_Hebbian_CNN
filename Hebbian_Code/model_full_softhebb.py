@@ -14,7 +14,7 @@ import umap
 
 
 
-default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
+default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': False, 'k': 50, 'act': nn.Identity(), 'alpha': 0.}
 
 
 class Triangle(nn.Module):
@@ -56,12 +56,6 @@ class Net_Triangle(nn.Module):
         self.fc1 = nn.Linear(24576, 10)
         self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
-        # self.fc2 = nn.Linear(300, 10)
-
-    def get_hidden_shape(self):
-        self.eval()
-        with torch.no_grad(): out = self.forward_features(torch.ones([1, 3, 32, 32], dtype=torch.float32)).shape[1:]
-        return out
 
     def forward_features(self, x):
         x = self.pool1(self.activ1(self.conv1(self.bn1(x))))

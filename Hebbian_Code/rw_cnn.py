@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 class RWConv2d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, padding=0,
-                 mode='global', lambda_max=1.0, use_input_as_stimuli=True):
+                 mode='rw', lambda_max=1.0, use_input_as_stimuli=True):
         super(RWConv2d, self).__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -16,7 +16,7 @@ class RWConv2d(nn.Module):
         self.lambda_max = lambda_max
         self.use_input_as_stimuli = use_input_as_stimuli
 
-        self.weight = nn.Parameter(torch.rand(out_channels, in_channels, *self.kernel_size))
+        self.weight = nn.Parameter(torch.zeros(out_channels, in_channels, *self.kernel_size))
 
         self.alpha_bp = 1
         self.alpha = nn.Parameter(torch.rand(out_channels), requires_grad=False)
@@ -25,8 +25,8 @@ class RWConv2d(nn.Module):
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
     def forward(self, x):
-        constrained_weight = torch.sigmoid(self.weight)
-        y = F.conv2d(x, constrained_weight, None, self.stride, self.padding)
+        weights_constrained = torch.clamp(self.weight, 0, 1)
+        y = F.conv2d(x, weights_constrained, None, self.stride, self.padding)
         if self.training:
             self.compute_update(x, y)
         return y
@@ -38,6 +38,8 @@ class RWConv2d(nn.Module):
             self.local_within_filter_update(x, y)
         elif self.mode == 'between_spatial_neurons':
             self.between_spatial_neurons_update(x, y)
+        elif self.mode == 'rw':
+            self.rw_cnn_update(x, y)
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
@@ -113,47 +115,28 @@ class RWConv2d(nn.Module):
         self.delta_w += delta_V
 
     def rw_cnn_update(self, x, y):
-        constrained_weight = torch.sigmoid(self.weight)
         batch_size, _, h_out, w_out = y.shape
 
-        # Treat each spatial location as a separate "trial"
-        y_spatial = y.view(batch_size, self.out_channels, -1)  # (batch, channels, spatial)
+        # Compute prediction error (λ - ΣV)
+        prediction_error = self.lambda_max - y
 
-        # Total prediction for each spatial location
-        total_prediction = y_spatial.sum(dim=1)  # (batch, spatial)
+        # Unfold input for patch-wise operations
+        x_unf = F.unfold(x, self.kernel_size, stride=self.stride, padding=self.padding)
+        x_unf = x_unf.view(batch_size, self.in_channels * self.kernel_size[0] * self.kernel_size[1], h_out * w_out)
 
-        # Shared prediction error for each spatial location
-        prediction_error = self.lambda_max - total_prediction  # (batch, spatial)
+        # Reshape prediction error
+        prediction_error = prediction_error.view(batch_size, self.out_channels, -1)
 
-        # Normalize prediction error
-        prediction_error = prediction_error / self.out_channels
+        # Compute weight updates (ΔV = αβ(λ - ΣV))
+        delta_w = self.alpha.view(1, -1, 1) * self.beta.view(1, -1, 1) * prediction_error
 
-        # Compute salience (α) for each filter at each spatial location
-        salience = y_spatial / (total_prediction.unsqueeze(1) + 1e-6)  # (batch, channels, spatial)
+        # Compute the update for each weight
+        delta_w = torch.bmm(delta_w, x_unf.transpose(1, 2)).mean(0)
+        delta_w = delta_w.view(self.weight.shape)
 
-        # Compute update for each filter at each spatial location
-        delta_V_spatial = salience * self.beta * prediction_error.unsqueeze(1)  # (batch, channels, spatial)
-
-        # Reshape delta_V to match weight dimensions
-        delta_V = delta_V_spatial.view(batch_size, self.out_channels, h_out, w_out)
-
-        # Compute correlation with input
-        if self.use_input_as_stimuli:
-            x_unf = F.unfold(x, self.kernel_size, stride=self.stride, padding=self.padding)
-            x_unf = x_unf.view(batch_size, self.in_channels, self.kernel_size[0] * self.kernel_size[1], h_out * w_out)
-            delta_V = delta_V.view(batch_size, self.out_channels, 1, h_out * w_out)
-            delta_W = torch.matmul(delta_V, x_unf.permute(0, 3, 1, 2)).mean(0)
-            delta_W = delta_W.view(self.weight.shape)
-        else:
-            delta_W = F.conv2d(x.transpose(0, 1), delta_V.transpose(0, 1), padding=self.padding).transpose(0, 1)
-            delta_W = delta_W.mean(0)
-
-        # Ensure update is within bounds
-        max_delta = torch.max(1 - constrained_weight, torch.zeros_like(constrained_weight))
-        min_delta = torch.min(-constrained_weight, torch.zeros_like(constrained_weight))
-        delta_W = torch.clamp(delta_W, min=min_delta, max=max_delta)
-
-        self.delta_w += delta_W
+        # Normalize updates to implement competition
+        delta_w = delta_w / (torch.sum(torch.abs(x_unf), dim=2).mean(0).view(1, -1, 1, 1) + 1e-6)
+        self.delta_w += delta_w
 
     @torch.no_grad()
     def local_update(self):

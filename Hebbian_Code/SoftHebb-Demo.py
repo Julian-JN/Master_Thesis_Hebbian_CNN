@@ -118,6 +118,12 @@ class DeepSoftHebb(nn.Module):
         self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
 
+    def features_extract(self, x):
+        x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
+        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
+        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
+        return x
+
     def forward(self, x):
         # block 1
         out = self.pool1(self.activ1(self.conv1(self.bn1(x))))
@@ -324,7 +330,8 @@ if __name__ == "__main__":
 
     unsup_optimizer = TensorLRSGD([
         {"params": model.conv1.parameters(), "lr": -0.08, },  # SGD does descent, so set lr to negative
-        {"params": model.conv2.parameters(), "lr": -0.005, }
+        {"params": model.conv2.parameters(), "lr": -0.005, },
+        {"params": model.conv3.parameters(), "lr": -0.01, }
     ], lr=0)
     unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
@@ -358,10 +365,14 @@ if __name__ == "__main__":
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False
+    model.conv3.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
+    model.conv3.eval()
     model.bn1.eval()
     model.bn2.eval()
+    model.bn3.eval()
+
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     for epoch in range(50):

@@ -87,7 +87,7 @@ class HebbianConv2d(nn.Module):
         self.t_invert = torch.tensor(t_invert)
 
         self.presynaptic_competition_type = "softmax"
-        self.presynaptic_weights = True  # presynaptic competition in forward pass
+        self.presynaptic_weights = False  # presynaptic competition in forward pass
 
         self.activation_history = None
         self.temporal_window = 100
@@ -202,9 +202,11 @@ class HebbianConv2d(nn.Module):
             # Compute threshold for each spatial location
             temporal_threshold = torch.mean(median_activations, dim=0, keepdim=True)
             # Determine winners at each spatial location
-            temporal_winners = (median_activations > temporal_threshold).float()
+            # temporal_winners = (median_activations > temporal_threshold).float()
             # Shape: [batch_size, out_channels, height_out, width_out]
-            
+            winner_scores = F.relu(median_activations - temporal_threshold)
+            total_scores = winner_scores.sum(dim=1, keepdim=True)
+            temporal_winners = winner_scores / (total_scores + 1e-6)
             # Compute update using conv2d and conv_transpose2d
             yx = F.conv2d(x.transpose(0, 1), (y * temporal_winners).transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
@@ -232,8 +234,11 @@ class HebbianConv2d(nn.Module):
             # Compute threshold for each spatial location
             threshold = mean_sim + self.competition_k * std_sim
             # Determine winners at each spatial location
-            winners = (similarities > threshold).float()
+            # winners = (similarities > threshold).float()
             # Shape: [batch_size, out_channels, height_out, width_out]
+            winner_scores = F.relu(similarities - threshold)
+            total_scores = winner_scores.sum(dim=1, keepdim=True)
+            winners = winner_scores / (total_scores + 1e-6)
             # Compute update using conv2d
             yx = F.conv2d(x.transpose(0, 1), winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)

@@ -87,7 +87,7 @@ class HebbianConv2d(nn.Module):
         self.t_invert = torch.tensor(t_invert)
 
         self.presynaptic_competition_type = "softmax"
-        self.presynaptic_weights = False  # presynaptic competition in forward pass
+        self.presynaptic_weights = True  # presynaptic competition in forward pass
 
         self.activation_history = None
         self.temporal_window = 100
@@ -190,19 +190,21 @@ class HebbianConv2d(nn.Module):
             batch_size, out_channels, height_out, width_out = y.shape
             # Update activation history
             if self.activation_history is None:
-
                 self.activation_history = y.detach().clone()
             else:
                 self.activation_history = torch.cat([self.activation_history, y.detach()], dim=0)
                 if self.activation_history.size(0) > self.temporal_window:
                     self.activation_history = self.activation_history[-self.temporal_window:]
-            # Compute median activations over time
-            median_activations = torch.median(self.activation_history, dim=0)[0]
-            # Shape: [batch_size, out_channels, height_out, width_out]
-            # Determine temporal winners
-            temporal_threshold = torch.mean(median_activations)
+            # Reshape activation history to group by spatial location
+            history_spatial = self.activation_history.view(-1, self.out_channels, height_out, width_out)
+            # Compute median activations for each spatial location
+            median_activations = torch.median(history_spatial, dim=0)[0]
+            # Compute threshold for each spatial location
+            temporal_threshold = torch.mean(median_activations, dim=0, keepdim=True)
+            # Determine winners at each spatial location
             temporal_winners = (median_activations > temporal_threshold).float()
             # Shape: [batch_size, out_channels, height_out, width_out]
+            
             # Compute update using conv2d and conv_transpose2d
             yx = F.conv2d(x.transpose(0, 1), (y * temporal_winners).transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
@@ -224,12 +226,12 @@ class HebbianConv2d(nn.Module):
             # Shape: [batch_size, out_channels, height_out, width_out]
             similarities = similarities / (torch.norm(weight.view(out_channels, -1), dim=1).view(1, -1, 1, 1) + 1e-10)
             # Shape: [batch_size, out_channels, height_out, width_out]
-            # Compute adaptive threshold
-            mean_sim = similarities.mean()
-            std_sim = similarities.std()
+            # Compute mean and std dev for each spatial location
+            mean_sim = similarities.mean(dim=1, keepdim=True)
+            std_sim = similarities.std(dim=1, keepdim=True)
+            # Compute threshold for each spatial location
             threshold = mean_sim + self.competition_k * std_sim
-            # All scalars
-            # Determine winners
+            # Determine winners at each spatial location
             winners = (similarities > threshold).float()
             # Shape: [batch_size, out_channels, height_out, width_out]
             # Compute update using conv2d

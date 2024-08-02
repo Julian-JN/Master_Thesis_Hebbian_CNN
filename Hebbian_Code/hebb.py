@@ -209,21 +209,21 @@ class HebbianConv2d(nn.Module):
                 _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
                 y_compete = torch.zeros_like(y_winners).view(batch_size, -1)
                 y_compete.scatter_(1, top_k_indices, y_winners.view(batch_size, -1).gather(1, top_k_indices))
-                temporal_winners = y_compete.view_as(y)
+                y_winners = y_compete.view_as(y)
             elif self.competition_type == 'soft':
-                temporal_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
+                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
             elif self.competition_type == 'anti':
                 _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
                 anti_hebbian_mask = torch.ones_like(y_winners).view(batch_size, -1)
                 anti_hebbian_mask.scatter_(1, top_k_indices, -1)
-                temporal_winners = y_winners * anti_hebbian_mask.view_as(y)
+                y_winners = y_winners * anti_hebbian_mask.view_as(y)
             # Shape: [batch_size, out_channels, height_out, width_out]
             # Compute update using conv2d and conv_transpose2d
-            yx = F.conv2d(x.transpose(0, 1), (y * temporal_winners).transpose(0, 1), padding=0,
+            yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
-            y_sum = (y * temporal_winners).sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
             # Shape: [out_channels, 1, 1, 1]
             update = yx - y_sum * weight
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
@@ -246,26 +246,29 @@ class HebbianConv2d(nn.Module):
             threshold = mean_sim + self.competition_k * std_sim
             # Determine winners at each spatial location
             winners = (similarities > threshold).float()
-            y_winners = winners * similarities
+            y_winners = winners * similarities # instead if similarity
             # Shape: [batch_size, out_channels, height_out, width_out]
             if self.competition_type == 'hard':
-                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
-                y_compete = torch.zeros_like(y_winners).view(batch_size, -1)
-                y_compete.scatter_(1, top_k_indices, y_winners.view(batch_size, -1).gather(1, top_k_indices))
-                winners = y_compete.view_as(y)
+                y_winners = y_winners.view(batch_size, out_channels, -1)
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                y_compete = torch.zeros_like(y_winners)
+                y_compete.scatter_(1, top_k_indices, y_winners.gather(1, top_k_indices))
+                y_winners = y_compete.view_as(y)
             elif self.competition_type == 'soft':
-                winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
+                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=1).view_as(
+                    y)
             elif self.competition_type == 'anti':
-                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
-                anti_hebbian_mask = torch.ones_like(y_winners).view(batch_size, -1)
+                y_winners = y_winners.view(batch_size, out_channels, -1)
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                anti_hebbian_mask = torch.ones_like(y_winners)
                 anti_hebbian_mask.scatter_(1, top_k_indices, -1)
-                winners = y_winners * anti_hebbian_mask.view_as(y)
+                y_winners = (y_winners * anti_hebbian_mask).view_as(y)
             # Compute update using conv2d
-            yx = F.conv2d(x.transpose(0, 1), winners.transpose(0, 1), padding=0,
+            yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
-            y_sum = winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
             # Shape: [out_channels, 1, 1, 1]
             update = yx - y_sum * weight
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]

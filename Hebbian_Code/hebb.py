@@ -90,8 +90,9 @@ class HebbianConv2d(nn.Module):
         self.presynaptic_weights = False  # presynaptic competition in forward pass
 
         self.activation_history = None
-        self.temporal_window = 100
-        self.competition_k = 1
+        self.temporal_window = 500
+        self.competition_k = 2
+        self.competition_type = "hard"
 
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
@@ -202,11 +203,21 @@ class HebbianConv2d(nn.Module):
             # Compute threshold for each spatial location
             temporal_threshold = torch.mean(median_activations, dim=0, keepdim=True)
             # Determine winners at each spatial location
-            # temporal_winners = (median_activations > temporal_threshold).float()
+            temporal_winners = (median_activations > temporal_threshold).float()
+            y_winners = temporal_winners * y
+            if self.competition_type == 'hard':
+                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
+                y_compete = torch.zeros_like(y_winners).view(batch_size, -1)
+                y_compete.scatter_(1, top_k_indices, y_winners.view(batch_size, -1).gather(1, top_k_indices))
+                temporal_winners = y_compete.view_as(y)
+            elif self.competition_type == 'soft':
+                temporal_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
+            elif self.competition_type == 'anti':
+                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
+                anti_hebbian_mask = torch.ones_like(y_winners).view(batch_size, -1)
+                anti_hebbian_mask.scatter_(1, top_k_indices, -1)
+                temporal_winners = y_winners * anti_hebbian_mask.view_as(y)
             # Shape: [batch_size, out_channels, height_out, width_out]
-            winner_scores = F.relu(median_activations - temporal_threshold)
-            total_scores = winner_scores.sum(dim=1, keepdim=True)
-            temporal_winners = winner_scores / (total_scores + 1e-6)
             # Compute update using conv2d and conv_transpose2d
             yx = F.conv2d(x.transpose(0, 1), (y * temporal_winners).transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
@@ -234,11 +245,21 @@ class HebbianConv2d(nn.Module):
             # Compute threshold for each spatial location
             threshold = mean_sim + self.competition_k * std_sim
             # Determine winners at each spatial location
-            # winners = (similarities > threshold).float()
+            winners = (similarities > threshold).float()
+            y_winners = winners * similarities
             # Shape: [batch_size, out_channels, height_out, width_out]
-            winner_scores = F.relu(similarities - threshold)
-            total_scores = winner_scores.sum(dim=1, keepdim=True)
-            winners = winner_scores / (total_scores + 1e-6)
+            if self.competition_type == 'hard':
+                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
+                y_compete = torch.zeros_like(y_winners).view(batch_size, -1)
+                y_compete.scatter_(1, top_k_indices, y_winners.view(batch_size, -1).gather(1, top_k_indices))
+                winners = y_compete.view_as(y)
+            elif self.competition_type == 'soft':
+                winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
+            elif self.competition_type == 'anti':
+                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
+                anti_hebbian_mask = torch.ones_like(y_winners).view(batch_size, -1)
+                anti_hebbian_mask.scatter_(1, top_k_indices, -1)
+                winners = y_winners * anti_hebbian_mask.view_as(y)
             # Compute update using conv2d
             yx = F.conv2d(x.transpose(0, 1), winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)

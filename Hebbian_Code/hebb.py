@@ -26,6 +26,8 @@ class HebbianConv2d(nn.Module):
     MODE_BCM = 'bcm'
     MODE_HARDWT = "hard"
     MODE_PRESYNAPTIC_COMPETITION = "pre"
+    MODE_TEMPORAL_COMPETITION = "temp"
+    MODE_ADAPTIVE_THRESHOLD = "thresh"
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0,
                  w_nrm=False, bias=False, act=nn.Identity(),
@@ -67,7 +69,8 @@ class HebbianConv2d(nn.Module):
         self.act = act
         # self.act = self.cos_sim2d
         self.theta_decay = 0.5
-        # self.theta = nn.Parameter(torch.zeros(out_channels), requires_grad=False)
+        if mode == "bcm":
+            self.theta = nn.Parameter(torch.ones(out_channels), requires_grad=False)
 
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
         self.top_k = top_k
@@ -86,6 +89,10 @@ class HebbianConv2d(nn.Module):
         self.presynaptic_competition_type = "softmax"
         self.presynaptic_weights = False  # presynaptic competition in forward pass
 
+        self.activation_history = None
+        self.temporal_window = 100
+        self.competition_k = 1
+
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
@@ -100,26 +107,26 @@ class HebbianConv2d(nn.Module):
 
     def compute_activation(self, x):
         w = self.weight
-        # if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
-        # if self.presynaptic_weights: w = w * self.compute_presynaptic_competition(w)
+        if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
+        if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         # y = self.act(x)
-        return y
+        return y, w
 
     def forward(self, x):
-        y = self.compute_activation(x)
+        y, w = self.compute_activation(x)
         if self.training:
-            self.compute_update(x, y)
+            self.compute_update(x, y, w)
         return y
 
-    def compute_update(self, x, y):
+    def compute_update(self, x, y, weight):
         """
 		This function implements the logic that computes local plasticity rules from input x and output y. The
 		resulting weight update is stored in buffer self.delta_w for later use.
 		"""
         if self.mode not in [self.MODE_HPCA, self.MODE_BASIC_HEBBIAN, self.MODE_WTA, self.MODE_BCM, self.MODE_SOFTWTA,
-                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION]:
+                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION, self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD]:
             raise NotImplementedError(
                 "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
 
@@ -152,10 +159,10 @@ class HebbianConv2d(nn.Module):
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
             # Reshape yx to match the weight shape
-            yx = yx.view(self.weight.shape)
+            yx = yx.view(weight.shape)
             # Compute y * w
             y_sum = y.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            yw = y_sum * self.weight
+            yw = y_sum * weight
             # Compute update
             update = yx - yw
             # Normalization (optional, keeping it for consistency with original code)
@@ -163,49 +170,108 @@ class HebbianConv2d(nn.Module):
             self.delta_w += update
 
         if self.mode == self.MODE_PRESYNAPTIC_COMPETITION:
-            presynaptic_weights_comp = self.compute_presynaptic_competition(self.weight)
-            weight_precomp = self.weight*presynaptic_weights_comp
             # Compute yx using conv2d with input x
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1)
             # Reshape yx to match the weight shape
-            yx = yx.view(self.weight.shape)
+            yx = yx.view(weight.shape)
             # Apply competition to yx
-            yx_competed = yx * presynaptic_weights_comp
+            yx_competed = yx * weight
             # Compute y * w
             y_sum = y.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            yw = y_sum * weight_precomp
+            yw = y_sum * weight
             # Compute update
             update = yx_competed - yw
             # Normalization
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
+        if self.mode == self.MODE_TEMPORAL_COMPETITION:
+            batch_size, out_channels, height_out, width_out = y.shape
+            # Update activation history
+            if self.activation_history is None:
+
+                self.activation_history = y.detach().clone()
+            else:
+                self.activation_history = torch.cat([self.activation_history, y.detach()], dim=0)
+                if self.activation_history.size(0) > self.temporal_window:
+                    self.activation_history = self.activation_history[-self.temporal_window:]
+            # Compute median activations over time
+            median_activations = torch.median(self.activation_history, dim=0)[0]
+            # Shape: [batch_size, out_channels, height_out, width_out]
+            # Determine temporal winners
+            temporal_threshold = torch.mean(median_activations)
+            temporal_winners = (median_activations > temporal_threshold).float()
+            # Shape: [batch_size, out_channels, height_out, width_out]
+            # Compute update using conv2d and conv_transpose2d
+            yx = F.conv2d(x.transpose(0, 1), (y * temporal_winners).transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride, groups=1)
+            yx = yx.view(weight.shape)
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            y_sum = (y * temporal_winners).sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            # Shape: [out_channels, 1, 1, 1]
+            update = yx - y_sum * weight
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            # Normalize update
+            update = update / (torch.norm(update.view(out_channels, -1), dim=1).view(-1, 1, 1, 1) + 1e-10)
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            self.delta_w += update
+
+        if self.mode == self.MODE_ADAPTIVE_THRESHOLD:
+            batch_size, out_channels, height_out, width_out = y.shape
+            # Compute similarities using conv2d for efficiency
+            similarities = F.conv2d(x, weight, stride=self.stride, padding=self.padding)
+            # Shape: [batch_size, out_channels, height_out, width_out]
+            similarities = similarities / (torch.norm(weight.view(out_channels, -1), dim=1).view(1, -1, 1, 1) + 1e-10)
+            # Shape: [batch_size, out_channels, height_out, width_out]
+            # Compute adaptive threshold
+            mean_sim = similarities.mean()
+            std_sim = similarities.std()
+            threshold = mean_sim + self.competition_k * std_sim
+            # All scalars
+            # Determine winners
+            winners = (similarities > threshold).float()
+            # Shape: [batch_size, out_channels, height_out, width_out]
+            # Compute update using conv2d
+            yx = F.conv2d(x.transpose(0, 1), winners.transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride, groups=1)
+            yx = yx.view(weight.shape)
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            y_sum = winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            # Shape: [out_channels, 1, 1, 1]
+            update = yx - y_sum * weight
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            # Normalize update
+            update = update / (torch.norm(update.view(out_channels, -1), dim=1).view(-1, 1, 1, 1) + 1e-10)
+            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
+            self.delta_w += update
+
         if self.mode == self.MODE_BCM:
             # BCM uses WT Competition
             batch_size, out_channels, height_out, width_out = y.shape
             # WTA competition
-            y_flat = y.transpose(0, 1).reshape(out_channels, -1)
-            win_neurons = torch.argmax(y_flat, dim=0)
-            wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
-            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
-            y_wta = y * wta_mask
+            # y_flat = y.transpose(0, 1).reshape(out_channels, -1)
+            # win_neurons = torch.argmax(y_flat, dim=0)
+            # wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
+            # wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # y_wta = y * wta_mask
             # Update theta (sliding threshold) using WTA output
-            y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
+            y_squared = y.pow(2).mean(dim=(0, 2, 3))
             self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
             # Compute BCM update with WTA
-            y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
-            bcm_factor = y_wta * y_minus_theta
+            y_minus_theta = y - self.theta.view(1, -1, 1, 1)
+            bcm_factor = y * y_minus_theta
             # Compute update using conv2d for consistency with original code
             yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
             # Compute update
-            update = yx.view(self.weight.shape)
+            update = yx.view(weight.shape)
             # Normalize update (optional, keeping it for consistency with original code)
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
         if self.mode == self.MODE_SOFTWTA:
+
             batch_size, out_channels, height_out, width_out = y.shape
             # Compute soft WTA using softmax
             flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
@@ -223,15 +289,13 @@ class HebbianConv2d(nn.Module):
                           dilation=self.stride, groups=1).transpose(0, 1)  # Compute yu
             yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
             # Compute update
-            update = yx - yu.view(-1, 1, 1, 1) * self.weight
+            update = yx - yu.view(-1, 1, 1, 1) * weight
             # Normalization
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
         if self.mode == self.MODE_HARDWT:
             # Compute cosine similarity
-            # presynaptic_weights_comp = self.compute_presynaptic_competition(self.weight)
-            # w = self.weight*presynaptic_weights_comp
             # y = self.cos_sim2d(x)
             batch_size, out_channels, height_out, width_out = y.shape
             # WTA competition using cosine similarity
@@ -246,7 +310,7 @@ class HebbianConv2d(nn.Module):
             # Compute yu
             yu = torch.sum(y_wta, dim=(0, 2, 3))
             # Compute update
-            update = yx - yu.view(-1, 1, 1, 1) * self.weight
+            update = yx - yu.view(-1, 1, 1, 1) * weight
             # Normalization
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update

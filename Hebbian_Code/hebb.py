@@ -28,8 +28,9 @@ class HebbianConv2d(nn.Module):
     MODE_PRESYNAPTIC_COMPETITION = "pre"
     MODE_TEMPORAL_COMPETITION = "temp"
     MODE_ADAPTIVE_THRESHOLD = "thresh"
+    MODE_ANTIHARDWT = "antihard"
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0,
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0, groups = 1,
                  w_nrm=False, bias=False, act=nn.Identity(),
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=1., wta_competition='similarity_spatial',
@@ -62,9 +63,10 @@ class HebbianConv2d(nn.Module):
         self.padding = padding
         self.padding_mode = 'reflect'
         self.F_padding = (padding, padding, padding, padding)
+        self.groups = in_channels
 
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels, *self.kernel_size)))
+        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -104,7 +106,7 @@ class HebbianConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
         x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=1)
+        return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
         w = self.weight
@@ -127,38 +129,14 @@ class HebbianConv2d(nn.Module):
 		resulting weight update is stored in buffer self.delta_w for later use.
 		"""
         if self.mode not in [self.MODE_HPCA, self.MODE_BASIC_HEBBIAN, self.MODE_WTA, self.MODE_BCM, self.MODE_SOFTWTA,
-                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION, self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD]:
+                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION, self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD, self.MODE_ANTIHARDWT]:
             raise NotImplementedError(
                 "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
-
-        if self.mode == self.MODE_HPCA:
-            # Logic for hpca-type learning
-            x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-            x_unf = x_unf.permute(0, 2, 1).reshape(-1, x_unf.size(1))
-            r = y.permute(1, 0, 2, 3)
-            c = 1 / (r.shape[1] * r.shape[2] * r.shape[3])
-            cr = c * r
-            l = (torch.arange(self.weight.shape[0], device=x.device, dtype=x.dtype).unsqueeze(0).repeat(
-                self.weight.shape[0], 1) <= torch.arange(self.weight.shape[0], device=x.device,
-                                                         dtype=x.dtype).unsqueeze(1)).to(dtype=x.dtype)
-            if self.patchwise:
-                dec = (cr.reshape(r.shape[0], -1).matmul(r.reshape(r.shape[0], -1).transpose(-2, -1)) * l).matmul(
-                    self.weight.reshape(self.weight.shape[0], -1))
-                self.delta_w += (cr.reshape(r.shape[0], -1).matmul(x_unf) - dec).reshape_as(self.weight)
-            else:
-                r, cr = r.permute(2, 3, 0, 1), cr.permute(2, 3, 0, 1)
-                dec = torch.conv_transpose2d(
-                    (cr.matmul(r.transpose(-2, -1)) * l.unsqueeze(0).unsqueeze(1)).permute(3, 2, 0, 1), self.weight,
-                    stride=self.stride)
-                self.delta_w += (cr.permute(2, 3, 0, 1).reshape(r.shape[2], -1).matmul(x_unf) - F.unfold(dec,
-                                                                                                         kernel_size=self.kernel_size,
-                                                                                                         stride=self.stride).sum(
-                    dim=-1)).reshape_as(self.weight)
 
         if self.mode == self.MODE_BASIC_HEBBIAN:
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1)
+                          stride=self.dilation, dilation=self.stride)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Compute y * w
@@ -173,7 +151,7 @@ class HebbianConv2d(nn.Module):
         if self.mode == self.MODE_PRESYNAPTIC_COMPETITION:
             # Compute yx using conv2d with input x
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1)
+                          stride=self.dilation, dilation=self.stride)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Apply competition to yx
@@ -206,21 +184,24 @@ class HebbianConv2d(nn.Module):
             temporal_winners = (median_activations > temporal_threshold).float()
             y_winners = temporal_winners * y
             if self.competition_type == 'hard':
-                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
-                y_compete = torch.zeros_like(y_winners).view(batch_size, -1)
-                y_compete.scatter_(1, top_k_indices, y_winners.view(batch_size, -1).gather(1, top_k_indices))
+                y_winners = y_winners.view(batch_size, out_channels, -1)
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                y_compete = torch.zeros_like(y_winners)
+                y_compete.scatter_(1, top_k_indices, y_winners.gather(1, top_k_indices))
                 y_winners = y_compete.view_as(y)
             elif self.competition_type == 'soft':
-                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, -1), dim=1).view_as(y)
+                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=1).view_as(
+                    y)
             elif self.competition_type == 'anti':
-                _, top_k_indices = torch.topk(y_winners.view(batch_size, -1), k=self.top_k, dim=1)
-                anti_hebbian_mask = torch.ones_like(y_winners).view(batch_size, -1)
+                y_winners = y_winners.view(batch_size, out_channels, -1)
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                anti_hebbian_mask = torch.ones_like(y_winners)
                 anti_hebbian_mask.scatter_(1, top_k_indices, -1)
-                y_winners = y_winners * anti_hebbian_mask.view_as(y)
+                y_winners = (y_winners * anti_hebbian_mask).view_as(y)
             # Shape: [batch_size, out_channels, height_out, width_out]
             # Compute update using conv2d and conv_transpose2d
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1)
+                          stride=self.dilation, dilation=self.stride)
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
@@ -265,7 +246,7 @@ class HebbianConv2d(nn.Module):
                 y_winners = (y_winners * anti_hebbian_mask).view_as(y)
             # Compute update using conv2d
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1)
+                          stride=self.dilation, dilation=self.stride)
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
@@ -278,28 +259,59 @@ class HebbianConv2d(nn.Module):
             self.delta_w += update
 
         if self.mode == self.MODE_BCM:
-            # BCM uses WT Competition
             batch_size, out_channels, height_out, width_out = y.shape
-            # WTA competition
-            # y_flat = y.transpose(0, 1).reshape(out_channels, -1)
-            # win_neurons = torch.argmax(y_flat, dim=0)
-            # wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
-            # wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
-            # y_wta = y * wta_mask
+            # Compute soft WTA using softmax (identical to SOFTWTA mode)
+            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+            flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
+            flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
+
+            # Find winning neurons
+            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
+            competing_idx = torch.arange(flat_weighted_inputs.size(1))
+
+            # Turn winner neurons' activations back to hebbian
+            flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
+
+            # Reshape softwta activations
+            y_soft = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
             # Update theta (sliding threshold) using WTA output
-            y_squared = y.pow(2).mean(dim=(0, 2, 3))
+            y_squared = y_soft.pow(2).mean(dim=(0, 2, 3))
             self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
             # Compute BCM update with WTA
-            y_minus_theta = y - self.theta.view(1, -1, 1, 1)
-            bcm_factor = y * y_minus_theta
+            y_minus_theta = y_soft - self.theta.view(1, -1, 1, 1)
+            bcm_factor = y_soft * y_minus_theta
             # Compute update using conv2d for consistency with original code
             yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
+                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
             # Compute update
             update = yx.view(weight.shape)
             # Normalize update (optional, keeping it for consistency with original code)
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
+
+
+            # # BCM uses WT Competition
+            # batch_size, out_channels, height_out, width_out = y.shape
+            # # WTA competition
+            # y_flat = y.transpose(0, 1).reshape(out_channels, -1)
+            # win_neurons = torch.argmax(y_flat, dim=0)
+            # wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
+            # wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # y_wta = y * wta_mask
+            # # Update theta (sliding threshold) using WTA output
+            # y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
+            # self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
+            # # Compute BCM update with WTA
+            # y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
+            # bcm_factor = y_wta * y_minus_theta
+            # # Compute update using conv2d for consistency with original code
+            # yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
+            #               stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
+            # # Compute update
+            # update = yx.view(weight.shape)
+            # # Normalize update (optional, keeping it for consistency with original code)
+            # update.div_(torch.abs(update).amax() + 1e-30)
+            # self.delta_w += update
 
         if self.mode == self.MODE_SOFTWTA:
 
@@ -317,8 +329,36 @@ class HebbianConv2d(nn.Module):
             softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,1)
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
-                          dilation=self.stride, groups=1).transpose(0, 1)  # Compute yu
+                          dilation=self.stride).transpose(0, 1)  # Compute yu
             yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
+            # Compute update
+            update = yx - yu.view(-1, 1, 1, 1) * weight
+            # Normalization
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
+
+        if self.mode == self.MODE_ANTIHARDWT:
+            batch_size, out_channels, height_out, width_out = y.shape
+
+            # Reshape y for easier processing
+            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+
+            # Find winning neurons
+            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
+            competing_idx = torch.arange(flat_weighted_inputs.size(1))
+            # Create anti-Hebbian mask
+            anti_hebbian_mask = torch.ones_like(flat_weighted_inputs) * -1  # All neurons start as anti-Hebbian
+            # Set winning neurons to Hebbian (positive)
+            anti_hebbian_mask[win_neurons, competing_idx] = 1
+            # Apply the mask to y
+            flat_hardwta_activs = flat_weighted_inputs * anti_hebbian_mask
+            # Reshape hardwta activations
+            hardwta_activs = flat_hardwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # Compute yx using conv2d
+            yx = F.conv2d(x.transpose(0, 1), hardwta_activs.transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            # Compute yu
+            yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
             # Compute update
             update = yx - yu.view(-1, 1, 1, 1) * weight
             # Normalization
@@ -336,8 +376,10 @@ class HebbianConv2d(nn.Module):
             wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
             y_wta = y * wta_mask
             # Compute yx using conv2d
+            # Standard convolution
             yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
+                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yx = yx.mean(dim=1, keepdim=True)
             # Compute yu
             yu = torch.sum(y_wta, dim=(0, 2, 3))
             # Compute update
@@ -407,6 +449,30 @@ class HebbianConv2d(nn.Module):
             update = update / (torch.norm(update, dim=1, keepdim=True) + 1e-30)
             # Reshape the update to match the weight shape
             self.delta_w += (update.reshape_as(self.weight) * self.binary_mask)
+
+        if self.mode == self.MODE_HPCA:
+            # Logic for hpca-type learning
+            x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
+            x_unf = x_unf.permute(0, 2, 1).reshape(-1, x_unf.size(1))
+            r = y.permute(1, 0, 2, 3)
+            c = 1 / (r.shape[1] * r.shape[2] * r.shape[3])
+            cr = c * r
+            l = (torch.arange(self.weight.shape[0], device=x.device, dtype=x.dtype).unsqueeze(0).repeat(
+                self.weight.shape[0], 1) <= torch.arange(self.weight.shape[0], device=x.device,
+                                                         dtype=x.dtype).unsqueeze(1)).to(dtype=x.dtype)
+            if self.patchwise:
+                dec = (cr.reshape(r.shape[0], -1).matmul(r.reshape(r.shape[0], -1).transpose(-2, -1)) * l).matmul(
+                    self.weight.reshape(self.weight.shape[0], -1))
+                self.delta_w += (cr.reshape(r.shape[0], -1).matmul(x_unf) - dec).reshape_as(self.weight)
+            else:
+                r, cr = r.permute(2, 3, 0, 1), cr.permute(2, 3, 0, 1)
+                dec = torch.conv_transpose2d(
+                    (cr.matmul(r.transpose(-2, -1)) * l.unsqueeze(0).unsqueeze(1)).permute(3, 2, 0, 1), self.weight,
+                    stride=self.stride)
+                self.delta_w += (cr.permute(2, 3, 0, 1).reshape(r.shape[2], -1).matmul(x_unf) - F.unfold(dec,
+                                                                                                         kernel_size=self.kernel_size,
+                                                                                                         stride=self.stride).sum(
+                    dim=-1)).reshape_as(self.weight)
 
     def generate_mask(self):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))

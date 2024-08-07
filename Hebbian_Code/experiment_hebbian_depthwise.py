@@ -6,8 +6,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 
 import data
-from model_full_wta import Net_Triangle
-# from model_full_softhebb import Net_Triangle
+from model_depthwise import Net_Depthwise
 
 import utils
 import numpy as np
@@ -138,9 +137,9 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
-    model = Net_Triangle(hebb_params=hebb_param)
+    model = Net_Depthwise(hebb_params=hebb_param)
     model.to(device)
 
     # unsup_optimizer = TensorLRSGD([
@@ -153,7 +152,10 @@ if __name__ == "__main__":
     hebb_params = [
         {'params': model.conv1.parameters(), 'lr': 0.1},
         {'params': model.conv2.parameters(), 'lr': 0.1},
-        {'params': model.conv3.parameters(), 'lr': 0.1}
+        {'params': model.conv_point2.parameters(), 'lr': 0.1},
+        {'params': model.conv3.parameters(), 'lr': 0.1},
+        {'params': model.conv_point3.parameters(), 'lr': 0.1}
+
     ]
     unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
@@ -175,7 +177,7 @@ if __name__ == "__main__":
             # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
-            for layer in [model.conv1, model.conv2, model.conv3]:
+            for layer in [model.conv1, model.conv2, model.conv3, model.conv_point1, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             # optimize
@@ -190,14 +192,23 @@ if __name__ == "__main__":
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False
+    model.conv3.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
+    model.conv3.eval()
     model.bn1.eval()
     model.bn2.eval()
-
-    model.conv3.requires_grad = False
-    model.conv3.eval()
     model.bn3.eval()
+
+    model.conv_point1.requires_grad = False
+    model.conv_point2.requires_grad = False
+    model.conv_point3.requires_grad = False
+    model.conv_point1.eval()
+    model.conv_point2.eval()
+    model.conv_point3.eval()
+    model.bn_point1.eval()
+    model.bn_point2.eval()
+    model.bn_point3.eval()
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=3)
     for epoch in range(50):

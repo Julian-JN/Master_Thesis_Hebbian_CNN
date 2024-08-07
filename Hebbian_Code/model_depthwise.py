@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 
 from hebb import HebbianConv2d
+from hebb_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -12,7 +13,6 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 from itertools import islice
 import umap
-
 
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 1.}
@@ -28,30 +28,36 @@ class Triangle(nn.Module):
         input = input - torch.mean(input.data, axis=1, keepdims=True)
         return F.relu(input, inplace=self.inplace) ** self.power
 
-class Net_Triangle(nn.Module):
+class Net_Depthwise(nn.Module):
     def __init__(self, hebb_params=None):
-        super(Net_Triangle, self).__init__()
+        super(Net_Depthwise, self).__init__()
 
         if hebb_params is None: hebb_params = default_hebb_params
 
-        # A single convolutional layer
+        # A single Depthwise convolutional layer
         self.bn1 = nn.BatchNorm2d(3, affine=False)
         self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=0)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ1 = Triangle(power=1.)
 
+
         self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=3, stride=1, **hebb_params,
+        self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
                                    t_invert=0.65, padding=0)
+        self.bn_point2 = nn.BatchNorm2d(96, affine=False)
+        self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params, padding=0)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ2 = Triangle(power=1.)
 
+
         self.bn3 = nn.BatchNorm2d(384, affine=False)
-        self.conv3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=3, stride=1, **hebb_params,
+        self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1, **hebb_params,
                                    t_invert=0.25, padding=0)
+        self.bn_point3 = nn.BatchNorm2d(384, affine=False)
+        self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1, **hebb_params,
+                                         padding=0)
         self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
         self.activ3 = Triangle(power=1.)
-
 
         self.flatten = nn.Flatten()
         # Final fully-connected layer classifier
@@ -65,14 +71,12 @@ class Net_Triangle(nn.Module):
 
     def features_extract(self, x):
         x = self.forward_features(x)
-        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
-        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
+        x = self.pool2(self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x))))))
+        x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
         return x
 
     def forward(self, x):
-        x = self.forward_features(x)
-        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
-        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
+        x = self.features_extract(x)
         x = self.flatten(x)
         x = self.fc1(self.dropout(x))
         return x

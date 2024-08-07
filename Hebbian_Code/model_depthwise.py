@@ -45,7 +45,7 @@ class Net_Depthwise(nn.Module):
         self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
                                    t_invert=0.65, padding=0)
         self.bn_point2 = nn.BatchNorm2d(96, affine=False)
-        self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params, padding=0)
+        self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params, t_invert=0.65, padding=0)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ2 = Triangle(power=1.)
 
@@ -55,7 +55,7 @@ class Net_Depthwise(nn.Module):
                                    t_invert=0.25, padding=0)
         self.bn_point3 = nn.BatchNorm2d(384, affine=False)
         self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1, **hebb_params,
-                                         padding=0)
+                                         t_invert=0.25, padding=0)
         self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
         self.activ3 = Triangle(power=1.)
 

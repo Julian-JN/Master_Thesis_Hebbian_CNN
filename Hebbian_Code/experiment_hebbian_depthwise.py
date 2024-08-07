@@ -137,37 +137,41 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise(hebb_params=hebb_param)
     model.to(device)
+    num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Parameter Count Total: {num_parameters}")
 
-    # unsup_optimizer = TensorLRSGD([
-    #     {"params": model.conv1.parameters(), "lr": 0.08, },
-    #     {"params": model.conv2.parameters(), "lr": 0.005, },
-    #     {"params": model.conv3.parameters(), "lr": 0.01, }
-    # ], lr=0)
-    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    unsup_optimizer = TensorLRSGD([
+        {"params": model.conv1.parameters(), "lr": 0.08, },
+        {"params": model.conv2.parameters(), "lr": 0.005, },
+        {"params": model.conv_point2.parameters(), "lr": 0.005, },
+        {"params": model.conv3.parameters(), "lr": 0.01, },
+        {"params": model.conv_point3.parameters(), "lr": 0.01, }
+    ], lr=0)
+    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
-    hebb_params = [
-        {'params': model.conv1.parameters(), 'lr': 0.1},
-        {'params': model.conv2.parameters(), 'lr': 0.1},
-        {'params': model.conv_point2.parameters(), 'lr': 0.1},
-        {'params': model.conv3.parameters(), 'lr': 0.1},
-        {'params': model.conv_point3.parameters(), 'lr': 0.1}
-
-    ]
-    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    # hebb_params = [
+    #     {'params': model.conv1.parameters(), 'lr': 0.1},
+    #     {'params': model.conv2.parameters(), 'lr': 0.1},
+    #     {'params': model.conv_point2.parameters(), 'lr': 0.1},
+    #     {'params': model.conv3.parameters(), 'lr': 0.1},
+    #     {'params': model.conv_point3.parameters(), 'lr': 0.1}
+    #
+    # ]
+    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
-                                          whiten_lvl=1e-3)
+                                          whiten_lvl=None)
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(3):
+    for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
@@ -177,14 +181,18 @@ if __name__ == "__main__":
             # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
-            for layer in [model.conv1, model.conv2, model.conv3, model.conv_point1, model.conv_point2, model.conv_point3]:
+            for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             # optimize
             unsup_optimizer.step()
-            # unsup_lr_scheduler.step()
+            unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
+    model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
+
+
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
@@ -200,13 +208,13 @@ if __name__ == "__main__":
     model.bn2.eval()
     model.bn3.eval()
 
-    model.conv_point1.requires_grad = False
+    # model.conv_point1.requires_grad = False
     model.conv_point2.requires_grad = False
     model.conv_point3.requires_grad = False
-    model.conv_point1.eval()
+    # model.conv_point1.eval()
     model.conv_point2.eval()
     model.conv_point3.eval()
-    model.bn_point1.eval()
+    # model.bn_point1.eval()
     model.bn_point2.eval()
     model.bn_point3.eval()
     print("Visualizing Class separation")

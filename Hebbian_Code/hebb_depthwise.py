@@ -77,7 +77,7 @@ class HebbianDepthConv2d(nn.Module):
         # self.act = self.cos_sim2d
         self.theta_decay = 0.5
         if mode == "bcm":
-            self.theta = nn.Parameter(torch.ones(out_channels), requires_grad=False)
+            self.theta = nn.Parameter(torch.ones(out_channels))
 
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
         self.top_k = top_k
@@ -338,17 +338,22 @@ class HebbianDepthConv2d(nn.Module):
         elif self.mode == self.MODE_SOFTWTA:
             # Competition and anti-Hebbian learning for y_depthwise
             batch_size, in_channels, height_depthwise, width_depthwise = y_depthwise.shape
-            flat_weighted_inputs_depthwise = y_depthwise.transpose(0, 1).reshape(in_channels, -1)
-            flat_softwta_activs_depthwise = torch.softmax(self.t_invert * flat_weighted_inputs_depthwise, dim=0)
-            flat_softwta_activs_depthwise = -flat_softwta_activs_depthwise  # Turn all postsynaptic activations into anti-Hebbian
-            win_neurons_depthwise = torch.argmax(flat_weighted_inputs_depthwise, dim=0)
-            competing_idx_depthwise = torch.arange(flat_weighted_inputs_depthwise.size(1))
-            flat_softwta_activs_depthwise[win_neurons_depthwise, competing_idx_depthwise] = - \
-            flat_softwta_activs_depthwise[win_neurons_depthwise, competing_idx_depthwise]
-            softwta_activs_depthwise = flat_softwta_activs_depthwise.view(in_channels, batch_size, height_depthwise,
-                                                                          width_depthwise).transpose(0, 1)
-
-
+            # Reshape to apply softmax within each channel
+            y_depthwise_reshaped = y_depthwise.view(batch_size, in_channels, -1)
+            # Apply softmax within each channel
+            flat_softwta_activs_depthwise = torch.softmax(self.t_invert * y_depthwise_reshaped, dim=2)
+            # Turn all postsynaptic activations into anti-Hebbian
+            flat_softwta_activs_depthwise = -flat_softwta_activs_depthwise
+            # Find winners within each channel
+            win_neurons_depthwise = torch.argmax(y_depthwise_reshaped, dim=2)
+            # Create a mask to flip the sign of winning neurons
+            mask = torch.zeros_like(flat_softwta_activs_depthwise)
+            mask.scatter_(2, win_neurons_depthwise.unsqueeze(2), 1)
+            # Flip the sign of winning neurons
+            flat_softwta_activs_depthwise = flat_softwta_activs_depthwise * (1 - 2 * mask)
+            # Reshape back to original shape
+            softwta_activs_depthwise = flat_softwta_activs_depthwise.view(batch_size, in_channels, height_depthwise,
+                                                                          width_depthwise)
             # Update for depthwise convolution
             yx_depthwise = F.conv2d(x.transpose(0, 1), softwta_activs_depthwise.transpose(0, 1), padding=0,
                                     stride=self.dilation, dilation=self.stride)

@@ -63,10 +63,11 @@ class HebbianConv2d(nn.Module):
         self.padding = padding
         self.padding_mode = 'reflect'
         self.F_padding = (padding, padding, padding, padding)
-        self.groups = in_channels
+        self.groups = in_channels # in_channels for depthwise
 
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+        # self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+        self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -96,6 +97,9 @@ class HebbianConv2d(nn.Module):
         self.competition_k = 2
         self.competition_type = "hard"
 
+        self.pointwise = nn.Conv2d(in_channels, out_channels, 1)
+
+
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
@@ -113,6 +117,8 @@ class HebbianConv2d(nn.Module):
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
+        # Channel expansion with 1x1 conv
+        y = self.pointwise(y)
         # For cosine similarity activation if cosine is to be used for next layer
         # y = self.act(x)
         return y, w
@@ -137,6 +143,9 @@ class HebbianConv2d(nn.Module):
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
+            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
+            if self.groups !=1:
+                yx = yx.mean(dim=1, keepdim=True)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Compute y * w
@@ -152,6 +161,9 @@ class HebbianConv2d(nn.Module):
             # Compute yx using conv2d with input x
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
+            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Apply competition to yx
@@ -202,6 +214,10 @@ class HebbianConv2d(nn.Module):
             # Compute update using conv2d and conv_transpose2d
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
+            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
+            # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
@@ -247,6 +263,10 @@ class HebbianConv2d(nn.Module):
             # Compute update using conv2d
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
+            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
+            # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
@@ -283,6 +303,11 @@ class HebbianConv2d(nn.Module):
             # Compute update using conv2d for consistency with original code
             yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
+            # Reshape yx to match the weight shape
+            yx = yx.view(weight.shape)
             # Compute update
             update = yx.view(weight.shape)
             # Normalize update (optional, keeping it for consistency with original code)
@@ -330,6 +355,8 @@ class HebbianConv2d(nn.Module):
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
                           dilation=self.stride).transpose(0, 1)  # Compute yu
+            if self.groups !=1:
+                yx = yx.mean(dim=1, keepdim=True)
             yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
             # Compute update
             update = yx - yu.view(-1, 1, 1, 1) * weight
@@ -357,6 +384,8 @@ class HebbianConv2d(nn.Module):
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), hardwta_activs.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            if self.groups !=1:
+                yx = yx.mean(dim=1, keepdim=True)
             # Compute yu
             yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
             # Compute update
@@ -379,7 +408,8 @@ class HebbianConv2d(nn.Module):
             # Standard convolution
             yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
-            yx = yx.mean(dim=1, keepdim=True)
+            if self.groups !=1:
+                yx = yx.mean(dim=1, keepdim=True)
             # Compute yu
             yu = torch.sum(y_wta, dim=(0, 2, 3))
             # Compute update

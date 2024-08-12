@@ -14,6 +14,33 @@ import matplotlib.pyplot as plt
 import umap
 import warnings
 
+from logger import Logger
+from torchmetrics import Accuracy, Precision, Recall, F1Score, ConfusionMatrix
+import seaborn as sns
+import wandb
+
+
+def calculate_metrics(preds, labels, num_classes):
+    if num_classes == 2:
+        accuracy = Accuracy(task='binary', num_classes=num_classes).to(device)
+        precision = Precision(task='binary', average='weighted', num_classes=num_classes).to(device)
+        recall = Recall(task='binary', average='weighted', num_classes=num_classes).to(device)
+        f1 = F1Score(task='binary', average='weighted', num_classes=num_classes).to(device)
+        confusion_matrix = ConfusionMatrix(task='binary', num_classes=num_classes).to(device)
+    else:
+        accuracy = Accuracy(task='multiclass', num_classes=num_classes).to(device)
+        precision = Precision(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        recall = Recall(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        f1 = F1Score(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        confusion_matrix = ConfusionMatrix(task='multiclass', num_classes=num_classes).to(device)
+
+    acc = accuracy(preds, labels)
+    prec = precision(preds, labels)
+    rec = recall(preds, labels)
+    f1_score = f1(preds, labels)
+    conf_matrix = confusion_matrix(preds, labels)
+
+    return acc, prec, rec, f1_score, conf_matrix
 
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
                             n_components=2, random_state=42):
@@ -52,7 +79,7 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
     projected_data = reducer.fit_transform(features_normalized)
     # Plotting
     if dim == 2:
-        plt.figure(figsize=(12, 10))
+        fig = plt.figure(figsize=(12, 10))
         scatter = plt.scatter(projected_data[:, 0], projected_data[:, 1], c=labels, alpha=0.5, cmap='tab10')
         plt.colorbar(scatter, label='Class Labels')
         plt.title(f'CIFAR-10 Data Clusters using {method.upper()} (2D)')
@@ -70,7 +97,9 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         ax.set_zlabel(f'{method.upper()} Component 3')
     else:
         raise ValueError("dim must be either 2 or 3")
-    plt.show()
+
+    wandb.log({"Class separation": wandb.Image(fig)})
+    plt.close(fig)
 
 
 class WeightNormDependentLR(optim.lr_scheduler._LRScheduler):
@@ -137,41 +166,45 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise(hebb_params=hebb_param)
     model.to(device)
+
+    wandb_logger = Logger(
+        f"HebbianCNN-Depthwise",
+        project='HebbianCNN', model=model)
+    logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
-    unsup_optimizer = TensorLRSGD([
-        {"params": model.conv1.parameters(), "lr": 0.08, },
-        {"params": model.conv2.parameters(), "lr": 0.005, },
-        {"params": model.conv_point2.parameters(), "lr": 0.005, },
-        {"params": model.conv3.parameters(), "lr": 0.01, },
-        {"params": model.conv_point3.parameters(), "lr": 0.01, }
-    ], lr=0)
-    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    # unsup_optimizer = TensorLRSGD([
+    #     {"params": model.conv1.parameters(), "lr": 0.08, },
+    #     {"params": model.conv2.parameters(), "lr": 0.005, },
+    #     {"params": model.conv_point2.parameters(), "lr": 0.005, },
+    #     {"params": model.conv3.parameters(), "lr": 0.01, },
+    #     {"params": model.conv_point3.parameters(), "lr": 0.01, }
+    # ], lr=0)
+    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
-    # hebb_params = [
-    #     {'params': model.conv1.parameters(), 'lr': 0.1},
-    #     {'params': model.conv2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv_point2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv3.parameters(), 'lr': 0.1},
-    #     {'params': model.conv_point3.parameters(), 'lr': 0.1}
-    #
-    # ]
-    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    hebb_params = [
+        {'params': model.conv1.parameters(), 'lr': 0.1},
+        {'params': model.conv2.parameters(), 'lr': 0.1},
+        {'params': model.conv_point2.parameters(), 'lr': 0.1},
+        {'params': model.conv3.parameters(), 'lr': 0.1},
+        {'params': model.conv_point3.parameters(), 'lr': 0.1}
+    ]
+    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=None)
-
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(1):
+    for epoch in range(2):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
@@ -186,13 +219,11 @@ if __name__ == "__main__":
                     layer.local_update()
             # optimize
             unsup_optimizer.step()
-            unsup_lr_scheduler.step()
+            # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
-
-
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
@@ -218,13 +249,15 @@ if __name__ == "__main__":
     model.bn_point2.eval()
     model.bn_point3.eval()
     print("Visualizing Class separation")
-    visualize_data_clusters(tst_set, model=model, method='umap', dim=3)
+    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     for epoch in range(50):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0
         correct = 0
         total = 0
+        train_preds = []
+        train_labels = []
         for i, data in enumerate(trn_set, 0):
             inputs, labels = data
             inputs = inputs.to(device)
@@ -241,17 +274,31 @@ if __name__ == "__main__":
             total += labels.size(0)
             _, predicted = torch.max(outputs.data, 1)
             correct += (predicted == labels).sum().item()
-        # Evaluation on test set
+            # For wandb logs
+            preds = torch.argmax(outputs, dim=1)
+            train_preds.append(preds)
+            train_labels.append(labels)
 
         print(f'Accuracy of the network on the train images: {100 * correct // total} %')
         print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
 
-        # on the test set
+        train_preds = torch.cat(train_preds, dim=0)
+        train_labels = torch.cat(train_labels, dim=0)
+        acc, prec, rec, f1_score, conf_matrix = calculate_metrics(train_preds, train_labels, 10)
+        logger.log({'train_accuracy': acc, 'train_precision': prec, 'train_recall': rec, 'train_f1_score': f1_score})
+        f, ax = plt.subplots(figsize=(15, 10))
+        sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
+        logger.log({"train_confusion_matrix": wandb.Image(f)})
+        plt.close(f)
+
+        # Evaluation on test set
         model.eval()
         running_loss = 0.
         correct = 0
         total = 0
         # since we're not training, we don't need to calculate the gradients for our outputs
+        test_preds = []
+        test_labels = []
         with torch.no_grad():
             for data in tst_set:
                 images, labels = data
@@ -265,6 +312,19 @@ if __name__ == "__main__":
                 correct += (predicted == labels).sum().item()
                 loss = criterion(outputs, labels)
                 running_loss += loss.item()
+                # For wandb logs
+                preds = torch.argmax(outputs, dim=1)
+                test_preds.append(preds)
+                test_labels.append(labels)
 
         print(f'Accuracy of the network on the test images: {100 * correct / total} %')
         print(f'test loss: {running_loss / total:.3f}')
+
+        test_preds = torch.cat(test_preds, dim=0)
+        test_labels = torch.cat(test_labels, dim=0)
+        acc, prec, rec, f1_score, conf_matrix = calculate_metrics(test_preds, test_labels, 10)
+        logger.log({'test_accuracy': acc, 'test_precision': prec, 'test_recall': rec, 'test_f1_score': f1_score})
+        f, ax = plt.subplots(figsize=(15, 10))
+        sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
+        logger.log({"test_confusion_matrix": wandb.Image(f)})
+        plt.close(f)

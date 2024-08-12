@@ -14,6 +14,8 @@ from tqdm import tqdm
 from itertools import islice
 import umap
 
+import wandb
+
 
 default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 1.}
 
@@ -106,7 +108,8 @@ class Net_Depthwise(nn.Module):
             ax.axis('off')
         plt.tight_layout()
         fig.savefig(path, bbox_inches='tight')
-        plt.show()
+        wandb.log({f'{layer_name} filters': wandb.Image(fig)})
+        # plt.show()
         plt.close(fig)
 
     def visualize_filters(self, layer_name='conv1', save_path=None):

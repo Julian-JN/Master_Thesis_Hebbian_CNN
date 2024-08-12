@@ -2,3 +2,4 @@
 __pycache__/HebbianClassifier.cpython-311.pyc
 __pycache__/HebbianConv.cpython-311.pyc
 Hebbian_Code/zca_data/cifar10/cifar10_zca.pt
+Hebbian_Code/wandb/

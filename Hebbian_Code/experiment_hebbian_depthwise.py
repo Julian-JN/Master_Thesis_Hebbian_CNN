@@ -7,8 +7,6 @@ import torch.optim.lr_scheduler as sched
 
 import data
 from model_depthwise import Net_Depthwise
-
-import utils
 import numpy as np
 import matplotlib.pyplot as plt
 import umap
@@ -18,7 +16,138 @@ from logger import Logger
 from torchmetrics import Accuracy, Precision, Recall, F1Score, ConfusionMatrix
 import seaborn as sns
 import wandb
+import pandas as pd
 
+
+def print_weight_statistics(layer, layer_name):
+    """
+    Prints statistics of the weights from a given layer.
+
+    Args:
+    layer (nn.Module): The layer to analyze
+    layer_name (str): Name of the layer for printing purposes
+    """
+    weights = layer.weight.data
+
+    print(f"Statistics for {layer_name}:")
+    print(f"Mean: {weights.mean().item():.4f}")
+    print(f"Max: {weights.max().item():.4f}")
+    print(f"Min: {weights.min().item():.4f}")
+    print(f"Standard Deviation: {weights.std().item():.4f}")
+    print(f"Median: {weights.median().item():.4f}")
+    print(f"25th Percentile: {weights.quantile(0.25).item():.4f}")
+    print(f"75th Percentile: {weights.quantile(0.75).item():.4f}")
+    print(f"Number of positive weights: {(weights > 0).sum().item()}")
+    print(f"Number of negative weights: {(weights < 0).sum().item()}")
+    print(f"Total number of weights: {weights.numel()}")
+    print()
+
+
+def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
+    weights = layer.weight.data
+    delta_w = layer.delta_w.data
+
+    if not detailed_mode:
+        fig, ax = plt.subplots(figsize=(12, 6))
+
+        for i in range(min(num_filters, weights.shape[0])):
+            weight_change = delta_w[i].sum().item()
+            color = 'green' if weight_change > 0 else 'red'
+            ax.bar(i, weight_change, color=color)
+
+        ax.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax.set_xlabel('Filter Index')
+        ax.set_ylabel('Total Weight Change')
+        ax.set_title(f'Overall LTP/LTD for first {num_filters} filters in {layer_name}')
+
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Overall_LTP_LTD": wandb.Image(fig)})
+        plt.close(fig)
+
+    else:
+        # Plot 1: Overall weight change
+        fig, ax1 = plt.subplots(figsize=(12, 6))
+        for i in range(min(num_filters, weights.shape[0])):
+            weight_change = delta_w[i].sum().item()
+            color = 'green' if weight_change > 0 else 'red'
+            ax1.bar(i, weight_change, color=color)
+
+        ax1.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax1.set_xlabel('Filter Index')
+        ax1.set_ylabel('Total Weight Change')
+        ax1.set_title(f'Overall LTP/LTD for first {num_filters} filters')
+
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Overall_LTP_LTD": wandb.Image(fig)})
+        plt.close(fig)
+
+        # Plot 2: Detailed weight changes within each filter
+        fig, ax2 = plt.subplots(figsize=(12, 6))
+        data = []
+        filter_indices = []
+        for i in range(min(num_filters, weights.shape[0])):
+            changes = delta_w[i].view(-1).tolist()
+            data.extend(changes)
+            filter_indices.extend([i] * len(changes))
+
+        sns.violinplot(x=filter_indices, y=data, ax=ax2)
+        ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
+        ax2.set_xlabel('Filter Index')
+        ax2.set_ylabel('Weight Change')
+        ax2.set_title(f'Detailed Weight Changes within first {num_filters} filters')
+
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Detailed_Weight_Changes": wandb.Image(fig)})
+        plt.close(fig)
+
+        # Plot 3: Detailed statistics for each filter
+        fig, ax3 = plt.subplots(figsize=(12, 6))
+        stats = []
+        for i in range(min(num_filters, weights.shape[0])):
+            filter_changes = delta_w[i].view(-1)
+            stats.append({
+                'Mean': filter_changes.mean().item(),
+                'Median': filter_changes.median().item(),
+                'Std Dev': filter_changes.std().item(),
+                '% Positive': (filter_changes > 0).float().mean().item() * 100,
+                '% Negative': (filter_changes < 0).float().mean().item() * 100
+            })
+
+        stat_df = pd.DataFrame(stats)
+        sns.heatmap(stat_df.T, annot=True, cmap='coolwarm', center=0, ax=ax3)
+        ax3.set_xlabel('Filter Index')
+        ax3.set_title('Detailed Statistics for Each Filter')
+
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Detailed_Statistics": wandb.Image(fig)})
+        plt.close(fig)
+
+        # Plot 4: LTP/LTD per Weight (mean across channels)
+        num_filters_to_show = min(25, weights.shape[0])
+        rows = int(np.ceil(np.sqrt(num_filters_to_show)))
+        cols = int(np.ceil(num_filters_to_show / rows))
+        fig, axes = plt.subplots(rows, cols, figsize=(20, 20))
+        axes = axes.flatten()
+
+        for i in range(num_filters_to_show):
+            filter_changes = delta_w[i].mean(dim=0).cpu().numpy()  # Mean across channels
+            im = axes[i].imshow(filter_changes, cmap='RdYlGn', interpolation='nearest')
+            axes[i].set_title(f'Filter {i}')
+            axes[i].axis('off')
+            plt.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
+
+        for j in range(i + 1, rows * cols):
+            axes[j].axis('off')
+
+        fig.suptitle('LTP/LTD per Weight (Mean across channels)', fontsize=16)
+
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_LTP_LTD_per_Weight": wandb.Image(fig)})
+        plt.close(fig)
+
+
+# Example usage:
+# plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
 
 def calculate_metrics(preds, labels, num_classes):
     if num_classes == 2:
@@ -54,10 +183,8 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
             data = data.to(device)
             if model is not None:
                 if hasattr(model, 'features_extract'):
-                    print("Extracting model features")
                     features = model.features_extract(data)
                 else:
-                    print("Extracting conv features")
                     features = model.conv1(data)
             else:
                 features = data
@@ -167,7 +294,7 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise(hebb_params=hebb_param)
     model.to(device)
@@ -179,32 +306,34 @@ if __name__ == "__main__":
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
-    # unsup_optimizer = TensorLRSGD([
-    #     {"params": model.conv1.parameters(), "lr": 0.08, },
-    #     {"params": model.conv2.parameters(), "lr": 0.005, },
-    #     {"params": model.conv_point2.parameters(), "lr": 0.005, },
-    #     {"params": model.conv3.parameters(), "lr": 0.01, },
-    #     {"params": model.conv_point3.parameters(), "lr": 0.01, }
-    # ], lr=0)
-    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
-
-    hebb_params = [
-        {'params': model.conv1.parameters(), 'lr': 0.1},
-        {'params': model.conv2.parameters(), 'lr': 0.1},
-        {'params': model.conv_point2.parameters(), 'lr': 0.1},
-        {'params': model.conv3.parameters(), 'lr': 0.1},
-        {'params': model.conv_point3.parameters(), 'lr': 0.1}
-    ]
-    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    unsup_optimizer = TensorLRSGD([
+        {"params": model.conv1.parameters(), "lr": 0.08, },
+        {"params": model.conv2.parameters(), "lr": 0.005, },
+        {"params": model.conv_point2.parameters(), "lr": 0.005, },
+        {"params": model.conv3.parameters(), "lr": 0.01, },
+        {"params": model.conv_point3.parameters(), "lr": 0.01, }
+    ], lr=0)
+    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    #
+    # hebb_params = [
+    #     {'params': model.conv1.parameters(), 'lr': 0.1},
+    #     {'params': model.conv2.parameters(), 'lr': 0.1},
+    #     {'params': model.conv_point2.parameters(), 'lr': 0.1},
+    #     {'params': model.conv3.parameters(), 'lr': 0.1},
+    #     {'params': model.conv_point3.parameters(), 'lr': 0.1}
+    # ]
+    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=None)
+
+    print(f'Processing Training batches: {len(trn_set)}')
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(2):
+    for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
@@ -214,20 +343,37 @@ if __name__ == "__main__":
             # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
+            # Visualize changes before updating
+            if i % 200 == 0: # Every 100 datapoint
+                print(f'Saving details after batch {i}')
+                plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.conv2, 'conv2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.conv_point2, 'conv_point2', num_filters=10, detailed_mode=True)
+                model.visualize_filters('conv1')
+                model.visualize_filters('conv2')
+                model.visualize_filters('conv_point2')
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             # optimize
             unsup_optimizer.step()
-            # unsup_lr_scheduler.step()
+            unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
+    model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
+
+
+    print("Weight statistics")
+    print_weight_statistics(model.conv1, 'conv1')
+    print_weight_statistics(model.conv2, 'conv2')
+    print_weight_statistics(model.conv3, 'conv3')
+    print_weight_statistics(model.conv_point2, 'conv3')
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
-    print("Classifier")
+    print("Training Classifier")
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False

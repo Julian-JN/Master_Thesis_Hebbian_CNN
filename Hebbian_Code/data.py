@@ -137,8 +137,8 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
         original_batch, _ = next(iter(temp_loader))
         whitened_batch = zca.transform(original_batch)
 
-        print("\nVisualization of ZCA effect:")
-        visualize_zca_effect(original_batch, whitened_batch)
+        # print("\nVisualization of ZCA effect:")
+        # visualize_zca_effect(original_batch, whitened_batch)
 
         print("\nCovariance check:")
         print("Before whitening:")

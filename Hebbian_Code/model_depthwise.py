@@ -107,7 +107,8 @@ class Net_Depthwise(nn.Module):
                 ax.set_title(f'Filter {i + 1}')
             ax.axis('off')
         plt.tight_layout()
-        fig.savefig(path, bbox_inches='tight')
+        if path:
+            fig.savefig(path, bbox_inches='tight')
         wandb.log({f'{layer_name} filters': wandb.Image(fig)})
         # plt.show()
         plt.close(fig)

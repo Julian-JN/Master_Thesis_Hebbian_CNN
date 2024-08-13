@@ -100,46 +100,75 @@ def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
         wandb.log({f"{layer_name}_Detailed_Weight_Changes": wandb.Image(fig)})
         plt.close(fig)
 
-        # Plot 3: Detailed statistics for each filter
-        fig, ax3 = plt.subplots(figsize=(12, 6))
+        # Plot 3: Detailed statistics for each filter and overall layer statistics
+        fig, (ax3, ax4) = plt.subplots(2, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [3, 1]})
         stats = []
         for i in range(min(num_filters, weights.shape[0])):
-            filter_changes = delta_w[i].view(-1)
+            filter_weights = weights[i].view(-1) #could be delta_w
             stats.append({
-                'Mean': filter_changes.mean().item(),
-                'Median': filter_changes.median().item(),
-                'Std Dev': filter_changes.std().item(),
-                '% Positive': (filter_changes > 0).float().mean().item() * 100,
-                '% Negative': (filter_changes < 0).float().mean().item() * 100
+                'Mean': filter_weights.mean().item(),
+                'Median': filter_weights.median().item(),
+                'Std Dev': filter_weights.std().item(),
+                '% Positive': (filter_weights > 0).float().mean().item() * 100,
+                '% Negative': (filter_weights < 0).float().mean().item() * 100
             })
-
+        # Per-filter statistics
         stat_df = pd.DataFrame(stats)
         sns.heatmap(stat_df.T, annot=True, cmap='coolwarm', center=0, ax=ax3)
         ax3.set_xlabel('Filter Index')
         ax3.set_title('Detailed Statistics for Each Filter')
-
+        # Overall layer statistics
+        all_weights = weights.view(-1)  # This includes ALL weights in the layer
+        overall_stats = pd.DataFrame({
+            'Layer Overall': {
+                'Mean': all_weights.mean().item(),
+                'Median': all_weights.median().item(),
+                'Std Dev': all_weights.std().item(),
+                '% Positive': (all_weights > 0).float().mean().item() * 100,
+                '% Negative': (all_weights < 0).float().mean().item() * 100
+            }
+        })
+        sns.heatmap(overall_stats, annot=True, cmap='coolwarm', center=0, ax=ax4)
+        ax4.set_title('Overall Layer Statistics')
+        plt.tight_layout()
         # Log the plot to wandb
-        wandb.log({f"{layer_name}_Detailed_Statistics": wandb.Image(fig)})
+        wandb.log({f"{layer_name}_Weight_Statistics": wandb.Image(fig)})
         plt.close(fig)
 
         # Plot 4: LTP/LTD per Weight (mean across channels)
         num_filters_to_show = min(25, weights.shape[0])
-        rows = int(np.ceil(np.sqrt(num_filters_to_show)))
-        cols = int(np.ceil(num_filters_to_show / rows))
-        fig, axes = plt.subplots(rows, cols, figsize=(20, 20))
-        axes = axes.flatten()
+        if weights.shape[2] == 1 and weights.shape[3] == 1:  # Check if kernels are 1x1
+            fig, ax = plt.subplots(figsize=(20, 5))
+            filter_changes = [delta_w[i].mean().item() for i in range(num_filters_to_show)]
+            norm = plt.Normalize(vmin=min(filter_changes), vmax=max(filter_changes))
+            colors = plt.cm.RdYlGn(norm(filter_changes))
+            ax.bar(range(num_filters_to_show), filter_changes, color=colors)
+            ax.set_xlabel('Filter Index')
+            ax.set_ylabel('Weight Change')
+            ax.set_title('LTP/LTD for 1x1 Kernels')
+            ax.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
+            sm = plt.cm.ScalarMappable(cmap="RdYlGn", norm=norm)
+            sm.set_array([])
+            cbar = plt.colorbar(sm, ax=ax, orientation='horizontal', aspect=30)
+            cbar.set_label('Weight Change')
 
-        for i in range(num_filters_to_show):
-            filter_changes = delta_w[i].mean(dim=0).cpu().numpy()  # Mean across channels
-            im = axes[i].imshow(filter_changes, cmap='RdYlGn', interpolation='nearest')
-            axes[i].set_title(f'Filter {i}')
-            axes[i].axis('off')
-            plt.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
+        else:
+            rows = int(np.ceil(np.sqrt(num_filters_to_show)))
+            cols = int(np.ceil(num_filters_to_show / rows))
+            fig, axes = plt.subplots(rows, cols, figsize=(20, 20))
+            axes = axes.flatten()
 
-        for j in range(i + 1, rows * cols):
-            axes[j].axis('off')
+            for i in range(num_filters_to_show):
+                filter_changes = delta_w[i].mean(dim=0).cpu().numpy()  # Mean across channels
+                im = axes[i].imshow(filter_changes, cmap='RdYlGn', interpolation='nearest')
+                axes[i].set_title(f'Filter {i}')
+                axes[i].axis('off')
+                plt.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
 
-        fig.suptitle('LTP/LTD per Weight (Mean across channels)', fontsize=16)
+            for j in range(i + 1, rows * cols):
+                axes[j].axis('off')
+
+            fig.suptitle('LTP/LTD per Weight (Mean across channels)', fontsize=16)
 
         # Log the plot to wandb
         wandb.log({f"{layer_name}_LTP_LTD_per_Weight": wandb.Image(fig)})
@@ -300,7 +329,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"HebbianCNN-Depthwise",
+        f"Soft-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

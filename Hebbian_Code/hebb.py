@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.manual_seed(0)
 
 
 def normalize(x, dim=None):
@@ -338,10 +339,17 @@ class HebbianConv2d(nn.Module):
             self.delta_w += update
 
         if self.mode == self.MODE_SOFTWTA:
-
             batch_size, out_channels, height_out, width_out = y.shape
             # Compute soft WTA using softmax
             flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+
+            # # Oscillations and Synchrony
+            # if not hasattr(self, 'oscillation_phase'):
+            #     self.oscillation_phase = 0
+            # oscillation = 0.1 * torch.sin(torch.tensor(self.oscillation_phase))
+            # flat_weighted_inputs += oscillation
+            # self.oscillation_phase += 0.1  # Update phase
+
             flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
             flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
             # Find winning neurons

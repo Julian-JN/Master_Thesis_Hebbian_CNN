@@ -6,7 +6,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 
 import data
-from model_depthwise import Net_Depthwise
+from model_residual import Net_Depthwise_Residual
 import numpy as np
 import matplotlib.pyplot as plt
 import umap
@@ -19,6 +19,7 @@ import wandb
 import pandas as pd
 
 torch.manual_seed(0)
+
 
 def print_weight_statistics(layer, layer_name):
     """
@@ -105,7 +106,7 @@ def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
         fig, (ax3, ax4) = plt.subplots(2, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [3, 1]})
         stats = []
         for i in range(min(num_filters, weights.shape[0])):
-            filter_weights = weights[i].view(-1) #could be delta_w
+            filter_weights = weights[i].view(-1)  # could be delta_w
             stats.append({
                 'Mean': filter_weights.mean().item(),
                 'Median': filter_weights.median().item(),
@@ -200,6 +201,7 @@ def calculate_metrics(preds, labels, num_classes):
     conf_matrix = confusion_matrix(preds, labels)
 
     return acc, prec, rec, f1_score, conf_matrix
+
 
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
                             n_components=2, random_state=42):
@@ -322,37 +324,34 @@ class TensorLRSGD(optim.SGD):
                 p.add_(-group['lr'] * d_p)
         return loss
 
+
 if __name__ == "__main__":
 
     hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
-    model = Net_Depthwise(hebb_params=hebb_param)
+    model = Net_Depthwise_Residual(hebb_params=hebb_param)
     model.to(device)
 
     wandb_logger = Logger(
-        f"Soft-HebbianCNN-Depthwise",
+        f"Residual-Soft-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
-    unsup_optimizer = TensorLRSGD([
-        {"params": model.conv1.parameters(), "lr": 0.08, },
-        {"params": model.conv2.parameters(), "lr": 0.005, },
-        {"params": model.conv_point2.parameters(), "lr": 0.005, },
-        {"params": model.conv3.parameters(), "lr": 0.01, },
-        {"params": model.conv_point3.parameters(), "lr": 0.01, }
-    ], lr=0)
-    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    # unsup_optimizer = TensorLRSGD([
+    #     {"params": model.conv1.parameters(), "lr": 0.08},
+    #     {"params": model.res1.parameters(), "lr": 0.005},
+    #     {"params": model.res2.parameters(), "lr": 0.01},
+    # ], lr=0)
+    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
     #
-    # hebb_params = [
-    #     {'params': model.conv1.parameters(), 'lr': 0.1},
-    #     {'params': model.conv2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv_point2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv3.parameters(), 'lr': 0.1},
-    #     {'params': model.conv_point3.parameters(), 'lr': 0.1}
-    # ]
-    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    hebb_params = [
+        {'params': model.conv1.parameters(), 'lr': 0.1},
+        {"params": model.res1.parameters(), "lr": 0.1},
+        {"params": model.res2.parameters(), "lr": 0.1},
+    ]
+    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
@@ -363,7 +362,7 @@ if __name__ == "__main__":
     print(f'Processing Training batches: {len(trn_set)}')
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(1):
+    for epoch in range(2):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
@@ -374,58 +373,59 @@ if __name__ == "__main__":
             with torch.no_grad():
                 outputs = model(inputs)
             # Visualize changes before updating
-            if i % 200 == 0: # Every 100 datapoint
+            if i % 200 == 0:  # Every 100 datapoint
                 print(f'Saving details after batch {i}')
                 plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd(model.conv2, 'conv2', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd(model.conv_point2, 'conv_point2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res1.conv1, 'res1.conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res1.conv2, 'res1.conv2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res1.conv3, 'res1.conv3', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv1, 'res1.conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv2, 'res1.conv2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv3, 'res1.conv3', num_filters=10, detailed_mode=True)
                 model.visualize_filters('conv1')
-                model.visualize_filters('conv2')
-                model.visualize_filters('conv_point2')
-            for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
+                model.visualize_filters('res1.conv1')
+                model.visualize_filters('res1.conv2')
+                model.visualize_filters('res1.conv3')
+
+            layers = hebbian_layers = [model.conv1,model.res1,model.res2]
+            for layer in layers:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
+                else:
+                    for sublayer in layer.modules():
+                        if hasattr(sublayer, 'local_update'):
+                            sublayer.local_update()
             # optimize
             unsup_optimizer.step()
-            unsup_lr_scheduler.step()
+            # unsup_lr_scheduler.step()
+
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
-    model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
-    model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
-    model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
-
+    model.visualize_filters('res1.conv1', f'results/{"demo"}/demo_res1_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('res1.conv2', f'results/{"demo"}/demo_res1_conv2_filters_epoch_{1}.png')
+    model.visualize_filters('res1.conv3', f'results/{"demo"}/demo_res1_conv3_filters_epoch_{1}.png')
+    model.visualize_filters('res2.conv1', f'results/{"demo"}/demo_res2_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('res2.conv2', f'results/{"demo"}/demo_res2_conv2_filters_epoch_{1}.png')
+    model.visualize_filters('res2.conv3', f'results/{"demo"}/demo_res2_conv3_filters_epoch_{1}.png')
 
     print("Weight statistics")
     print_weight_statistics(model.conv1, 'conv1')
-    print_weight_statistics(model.conv2, 'conv2')
-    print_weight_statistics(model.conv3, 'conv3')
-    print_weight_statistics(model.conv_point2, 'conv3')
+    print_weight_statistics(model.res1.conv2, 'res1.conv2')
+    print_weight_statistics(model.res2.conv2, 'res2.conv2')
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
-    print("Training Classifier")
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
-    model.conv2.requires_grad = False
-    model.conv3.requires_grad = False
+    model.res1.requires_grad = False
+    model.res2.requires_grad = False
     model.conv1.eval()
-    model.conv2.eval()
-    model.conv3.eval()
+    model.res1.eval()
+    model.res2.eval()
     model.bn1.eval()
-    model.bn2.eval()
-    model.bn3.eval()
-
-    # model.conv_point1.requires_grad = False
-    model.conv_point2.requires_grad = False
-    model.conv_point3.requires_grad = False
-    # model.conv_point1.eval()
-    model.conv_point2.eval()
-    model.conv_point3.eval()
-    # model.bn_point1.eval()
-    model.bn_point2.eval()
-    model.bn_point3.eval()
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+    print("Training Classifier")
     for epoch in range(50):
         model.fc1.train()
         model.dropout.train()

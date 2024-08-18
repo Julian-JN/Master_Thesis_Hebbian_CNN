@@ -30,41 +30,85 @@ class Triangle(nn.Module):
         input = input - torch.mean(input.data, axis=1, keepdims=True)
         return F.relu(input, inplace=self.inplace) ** self.power
 
-class Net_Depthwise(nn.Module):
+class LongSkipConnection(nn.Module):
+    def __init__(self, in_channels, out_channels, spatial_change=1, hebb_params=None):
+        super(LongSkipConnection, self).__init__()
+        if hebb_params is None:
+            hebb_params = default_hebb_params
+
+        self.conv = HebbianConv2d(in_channels, out_channels, kernel_size=1, stride=1, **hebb_params)
+        self.bn = nn.BatchNorm2d(out_channels, affine=False)
+        self.spatial_change = spatial_change
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        if self.spatial_change != 1:
+            x = F.adaptive_avg_pool2d(x, output_size=x.size()[2:] // self.spatial_change)
+        return x
+
+
+class HebbianResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, hebb_params=None, t_invert=1., expansion_factor=6):
+        super(HebbianResidualBlock, self).__init__()
+
+        if hebb_params is None:
+            hebb_params = default_hebb_params
+
+        # Calculate padding to maintain spatial dimensions
+        padding = (kernel_size - 1) // 2
+        hidden_dim = in_channels * expansion_factor
+
+        self.bn1 = nn.BatchNorm2d(in_channels, affine=False)
+        self.conv1 = HebbianConv2d(in_channels, hidden_dim, kernel_size=1, stride=1, **hebb_params, t_invert=t_invert,
+                                        padding=0)
+
+        self.bn2 = nn.BatchNorm2d(hidden_dim, affine=False)
+        self.conv2 = HebbianDepthConv2d(hidden_dim, hidden_dim, kernel_size, stride=1, **hebb_params,
+                                        t_invert=t_invert, padding=padding)
+
+        self.bn3 = nn.BatchNorm2d(hidden_dim, affine=False)
+        self.conv3 = HebbianConv2d(hidden_dim, out_channels, kernel_size=1, stride=1, **hebb_params, t_invert=t_invert,
+                                   padding=0)
+
+        self.activ = Triangle(power=1.)
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+            nn.BatchNorm2d(in_channels, affine=False),
+            HebbianConv2d(in_channels, out_channels, kernel_size=1, stride=1, **hebb_params, padding=0)
+            )
+
+    def forward(self, x):
+        residual = x
+        out = self.activ(self.conv1(self.bn1(x)))
+        out = self.activ(self.conv2(self.bn2(out)))
+        out = self.conv3(self.bn3(out))
+        out += self.shortcut(residual)
+        return self.activ(out)
+
+class Net_Depthwise_Residual(nn.Module):
     def __init__(self, hebb_params=None):
-        super(Net_Depthwise, self).__init__()
+        super(Net_Depthwise_Residual, self).__init__()
 
-        if hebb_params is None: hebb_params = default_hebb_params
+        if hebb_params is None:
+            hebb_params = default_hebb_params
 
-        # A single Depthwise convolutional layer
         self.bn1 = nn.BatchNorm2d(3, affine=False)
         self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=0)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
         self.activ1 = Triangle(power=1.)
 
-
-        self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.65, padding=0)
-        self.bn_point2 = nn.BatchNorm2d(96, affine=False)
-        self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params, t_invert=0.65, padding=0)
+        self.res1 = HebbianResidualBlock(96, 200, kernel_size=3, expansion_factor=4, hebb_params=hebb_params)
         self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.activ2 = Triangle(power=1.)
 
-
-        self.bn3 = nn.BatchNorm2d(384, affine=False)
-        self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.25, padding=0)
-        self.bn_point3 = nn.BatchNorm2d(384, affine=False)
-        self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1, **hebb_params,
-                                         t_invert=0.25, padding=0)
+        self.res2 = HebbianResidualBlock(200, 400, kernel_size=3, expansion_factor=4, hebb_params=hebb_params)
         self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
-        self.activ3 = Triangle(power=1.)
 
         self.flatten = nn.Flatten()
-        # Final fully-connected layer classifier
-        self.fc1 = nn.Linear(6144, 10)
-        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 6144)
+        self.fc1 = nn.Linear(3600, 10)  # Adjust this based on your input size
+        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 3600)
         self.dropout = nn.Dropout(0.5)
 
     def forward_features(self, x):
@@ -73,11 +117,8 @@ class Net_Depthwise(nn.Module):
 
     def features_extract(self, x):
         x = self.forward_features(x)
-        print(x.shape)
-        x = self.pool2(self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x))))))
-        print(x.shape)
-        x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
-        print(x.shape)
+        x = self.pool2(self.res1(x))
+        x = self.pool3(self.res2(x))
         return x
 
     def forward(self, x):
@@ -147,7 +188,13 @@ class Net_Depthwise(nn.Module):
         plt.close(fig)
 
     def visualize_filters(self, layer_name='conv1', save_path=None):
-        weights = getattr(self, layer_name).weight.data
+        # Split the layer name by '.' to handle nested attributes
+        attrs = layer_name.split('.')
+        layer = self
+        for attr in attrs:
+            layer = getattr(layer, attr)
+
+        weights = layer.weight.data
         self.plot_grid(weights, save_path, layer_name=layer_name)
 
     def visualize_receptive_fields(self, layer_name, dataloader, num_neurons=10, num_batches=10, save_path=None):
@@ -252,3 +299,6 @@ class Net_Depthwise(nn.Module):
         plt.ylabel('UMAP Dimension 2')
         plt.legend()
         plt.show()
+
+
+

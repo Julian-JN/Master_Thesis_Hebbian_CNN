@@ -19,6 +19,8 @@ from torch.optim.lr_scheduler import StepLR
 import data
 import torchvision
 
+torch.manual_seed(0)
+
 
 class SoftHebbConv2d(nn.Module):
     def __init__(
@@ -328,6 +330,9 @@ if __name__ == "__main__":
     model = DeepSoftHebb()
     model.to(device)
 
+    num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Parameter Count Total: {num_parameters}")
+
     unsup_optimizer = TensorLRSGD([
         {"params": model.conv1.parameters(), "lr": -0.08, },  # SGD does descent, so set lr to negative
         {"params": model.conv2.parameters(), "lr": -0.005, },
@@ -341,6 +346,10 @@ if __name__ == "__main__":
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=None)
+
+    print("Visualizing Initial Filters")
+    model.visualize_filters('conv1', f'results/{"softhebb"}/conv1_filters_epoch_{1}.png')
+    model.visualize_filters('conv2', f'results/{"softhebb"}/conv2_filters_epoch_{1}.png')
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0

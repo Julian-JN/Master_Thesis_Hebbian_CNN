@@ -362,7 +362,7 @@ if __name__ == "__main__":
     print(f'Processing Training batches: {len(trn_set)}')
     # Unsupervised training with SoftHebb
     running_loss = 0.0
-    for epoch in range(2):
+    for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data

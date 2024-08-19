@@ -49,13 +49,14 @@ class LongSkipConnection(nn.Module):
 
 
 class HebbianResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, hebb_params=None, t_invert=1., expansion_factor=6):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, hebb_params=None, t_invert=1., expansion_factor=6, act=1.):
         super(HebbianResidualBlock, self).__init__()
 
         if hebb_params is None:
             hebb_params = default_hebb_params
 
         # Calculate padding to maintain spatial dimensions
+        # Doubt regarding when additional padding is required
         padding = (kernel_size - 1) // 2
         hidden_dim = in_channels * expansion_factor
 
@@ -71,7 +72,7 @@ class HebbianResidualBlock(nn.Module):
         self.conv3 = HebbianConv2d(hidden_dim, out_channels, kernel_size=1, stride=1, **hebb_params, t_invert=t_invert,
                                    padding=0)
 
-        self.activ = Triangle(power=1.)
+        self.activ = Triangle(power=act)
 
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
@@ -96,19 +97,19 @@ class Net_Depthwise_Residual(nn.Module):
             hebb_params = default_hebb_params
 
         self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=0)
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
-        self.activ1 = Triangle(power=1.)
+        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=2)
+        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+        self.activ1 = Triangle(power=0.7)
 
-        self.res1 = HebbianResidualBlock(96, 200, kernel_size=3, expansion_factor=4, hebb_params=hebb_params)
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+        self.res1 = HebbianResidualBlock(96, 384, kernel_size=3, expansion_factor=4, hebb_params=hebb_params, t_invert=0.65, act=1.4)
+        self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
 
-        self.res2 = HebbianResidualBlock(200, 400, kernel_size=3, expansion_factor=4, hebb_params=hebb_params)
+        self.res2 = HebbianResidualBlock(384, 1536, kernel_size=3, expansion_factor=4, hebb_params=hebb_params, t_invert=0.25)
         self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
 
         self.flatten = nn.Flatten()
-        self.fc1 = nn.Linear(3600, 10)  # Adjust this based on your input size
-        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 3600)
+        self.fc1 = nn.Linear(24576, 10)  # Adjust this based on your input size
+        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
 
     def forward_features(self, x):

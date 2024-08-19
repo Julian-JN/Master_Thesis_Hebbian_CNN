@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
+import torch.nn.init as init
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
@@ -66,8 +68,11 @@ class HebbianConv2d(nn.Module):
         self.F_padding = (padding, padding, padding, padding)
         self.groups = 1 # in_channels for depthwise
 
-        weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+
+        self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
+        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
         # Depthwise separable weights
         # self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
         self.w_nrm = w_nrm

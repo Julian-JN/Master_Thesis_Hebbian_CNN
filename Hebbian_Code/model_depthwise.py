@@ -30,51 +30,132 @@ class Triangle(nn.Module):
         input = input - torch.mean(input.data, axis=1, keepdims=True)
         return F.relu(input, inplace=self.inplace) ** self.power
 
+
 class Net_Depthwise(nn.Module):
-    def __init__(self, hebb_params=None):
+    def __init__(self, hebb_params=None, version="soft"):
         super(Net_Depthwise, self).__init__()
 
         if hebb_params is None: hebb_params = default_hebb_params
+        if version == "softhebb":
+            # A single Depthwise convolutional layer
+            self.bn1 = nn.BatchNorm2d(3, affine=False)
+            self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params,
+                                       padding=2, t_invert=1)
+            self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+            self.activ1 = Triangle(power=0.7)
 
-        # A single Depthwise convolutional layer
-        self.bn1 = nn.BatchNorm2d(3, affine=False)
-        self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params, padding=2, t_invert=1)
-        self.pool1 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
-        self.activ1 = Triangle(power=0.7)
+            self.bn2 = nn.BatchNorm2d(96, affine=False)
+            self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.65, padding=1)
+            self.bn_point2 = nn.BatchNorm2d(96, affine=False)
+            self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params,
+                                             t_invert=0.65, padding=0)
+            self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
+            self.activ2 = Triangle(power=1.4)
 
+            self.bn3 = nn.BatchNorm2d(384, affine=False)
+            self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.25, padding=1)
+            self.bn_point3 = nn.BatchNorm2d(384, affine=False)
+            self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1, **hebb_params,
+                                             t_invert=0.25, padding=0)
+            self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ3 = Triangle(power=1.)
 
-        self.bn2 = nn.BatchNorm2d(96, affine=False)
-        self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.65, padding=1)
-        self.bn_point2 = nn.BatchNorm2d(96, affine=False)
-        self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1, **hebb_params, t_invert=0.65, padding=0)
-        self.pool2 = nn.MaxPool2d(kernel_size=4, stride=2, padding=1)
-        self.activ2 = Triangle(power=1.4)
+            self.flatten = nn.Flatten()
+            # Final fully-connected layer classifier
+            self.fc1 = nn.Linear(24576, 10)
+            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
+            self.dropout = nn.Dropout(0.5)
 
+        elif version == "hardhebb":
+            # A single Depthwise convolutional layer
+            self.bn1 = nn.BatchNorm2d(3, affine=False)
+            self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params,
+                                       padding=0, t_invert=1)
+            self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ1 = Triangle(power=0.7)
 
-        self.bn3 = nn.BatchNorm2d(384, affine=False)
-        self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1, **hebb_params,
-                                   t_invert=0.25, padding=1)
-        self.bn_point3 = nn.BatchNorm2d(384, affine=False)
-        self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1, **hebb_params,
-                                         t_invert=0.25, padding=0)
-        self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
-        self.activ3 = Triangle(power=1.)
+            self.bn2 = nn.BatchNorm2d(96, affine=False)
+            self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.65, padding=0)
+            self.bn_point2 = nn.BatchNorm2d(96, affine=False)
+            self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1,
+                                             **hebb_params,t_invert=0.65, padding=0)
+            # self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ2 = Triangle(power=1.4)
 
-        self.flatten = nn.Flatten()
-        # Final fully-connected layer classifier
-        self.fc1 = nn.Linear(24576, 10)
-        self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
-        self.dropout = nn.Dropout(0.5)
+            self.bn3 = nn.BatchNorm2d(384, affine=False)
+            self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1,
+                                            **hebb_params,
+                                            t_invert=0.25, padding=0)
+            self.bn_point3 = nn.BatchNorm2d(384, affine=False)
+            self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1,
+                                             **hebb_params,t_invert=0.25, padding=0)
+            self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ3 = Triangle(power=1.)
+
+            self.flatten = nn.Flatten()
+            # Final fully-connected layer classifier
+            self.fc1 = nn.Linear(38400, 10)
+            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 38400)
+            self.dropout = nn.Dropout(0.5)
+
+        elif version == "lagani":
+            # A single Depthwise convolutional layer
+            self.bn1 = nn.BatchNorm2d(3, affine=False)
+            self.conv1 = HebbianConv2d(in_channels=3, out_channels=96, kernel_size=5, stride=1, **hebb_params,
+                                       padding=0, t_invert=1)
+            self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ1 = Triangle(power=1.)
+
+            self.bn2 = nn.BatchNorm2d(96, affine=False)
+            self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.65, padding=0)
+            self.bn_point2 = nn.BatchNorm2d(96, affine=False)
+            self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=128, kernel_size=1, stride=1, **hebb_params,
+                                             t_invert=0.65, padding=0)
+            self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ2 = Triangle(power=1.)
+
+            self.bn3 = nn.BatchNorm2d(128, affine=False)
+            self.conv3 = HebbianDepthConv2d(in_channels=128, out_channels=128, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.25, padding=0)
+            self.bn_point3 = nn.BatchNorm2d(128, affine=False)
+            self.conv_point3 = HebbianConv2d(in_channels=128, out_channels=192, kernel_size=1, stride=1, **hebb_params,
+                                             t_invert=0.25, padding=0)
+            self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ3 = Triangle(power=1.)
+
+            self.bn4 = nn.BatchNorm2d(192, affine=False)
+            self.conv4 = HebbianDepthConv2d(in_channels=192, out_channels=192, kernel_size=3, stride=1, **hebb_params,
+                                            t_invert=0.25, padding=0)
+            self.bn_point4 = nn.BatchNorm2d(192, affine=False)
+            self.conv_point4 = HebbianConv2d(in_channels=192, out_channels=256, kernel_size=1, stride=1, **hebb_params,
+                                             t_invert=0.25, padding=0)
+            # self.pool4 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
+            self.activ4 = Triangle(power=1.)
+
+            self.flatten = nn.Flatten()
+            # Final fully-connected layer classifier
+            self.fc1 = nn.Linear(1728, 10)
+            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 1728)
+            self.dropout = nn.Dropout(0.5)
 
     def forward_features(self, x):
         x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
         return x
 
     def features_extract(self, x):
+        # SoftHebb
         x = self.forward_features(x)
-        x = self.pool2(self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x))))))
+        x = self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x)))))
         x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
+        # Lagani
+        # x = self.forward_features(x)
+        # x = self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x)))))
+        # x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
+        # x = self.activ4(self.conv4(self.bn4(x)))
         return x
 
     def forward(self, x):
@@ -154,9 +235,11 @@ class Net_Depthwise(nn.Module):
         # Create a figure to display the receptive fields
         fig, axes = plt.subplots(2, 5, figsize=(20, 8))
         fig.suptitle(f'Receptive Fields of {layer_name}')
+
         # Hook to capture the output of the specified layer
         def hook_fn(module, input, output):
             self.activations = output
+
         handle = layer.register_forward_hook(hook_fn)
         # Compute gradients for the first `num_neurons` neurons
         receptive_fields = torch.zeros(num_neurons, *next(iter(dataloader))[0].shape[1:], device=device)
@@ -178,7 +261,8 @@ class Net_Depthwise(nn.Module):
         for i in range(num_neurons):
             # Normalize the receptive field for visualization
             receptive_field = receptive_fields[i].cpu().numpy()
-            receptive_field = (receptive_field - receptive_field.min()) / (receptive_field.max() - receptive_field.min() + 1e-8)
+            receptive_field = (receptive_field - receptive_field.min()) / (
+                        receptive_field.max() - receptive_field.min() + 1e-8)
             # Plot the receptive field
             ax = axes[i // 5, i % 5]
             if receptive_field.shape[0] == 3:

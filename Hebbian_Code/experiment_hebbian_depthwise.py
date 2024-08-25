@@ -326,11 +326,11 @@ if __name__ == "__main__":
 
     hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
-    model = Net_Depthwise(hebb_params=hebb_param)
+    model = Net_Depthwise(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"Hard-Kaim-HebbianCNN-Depthwise",
+        f"WTA-Surround-hard-No-Pad-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -358,12 +358,19 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
-                                          whiten_lvl=None)
+                                          whiten_lvl=1e-3)
 
     print(f'Processing Training batches: {len(trn_set)}')
     # Unsupervised training with SoftHebb
+
+    print("Initial Weight statistics")
+    print_weight_statistics(model.conv1, 'conv1')
+    print_weight_statistics(model.conv2, 'conv2')
+    print_weight_statistics(model.conv3, 'conv3')
+    print_weight_statistics(model.conv_point2, 'conv_point2')
+
     running_loss = 0.0
-    for epoch in range(2):
+    for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
             inputs, _ = data
@@ -407,23 +414,26 @@ if __name__ == "__main__":
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False
     model.conv3.requires_grad = False
+    # model.conv4.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
     model.conv3.eval()
+    # model.conv4.eval()
     model.bn1.eval()
     model.bn2.eval()
     model.bn3.eval()
+    # model.bn4.eval()
 
-    # model.conv_point1.requires_grad = False
     model.conv_point2.requires_grad = False
     model.conv_point3.requires_grad = False
-    # model.conv_point1.eval()
+    # model.conv_point4.requires_grad = False
     model.conv_point2.eval()
     model.conv_point3.eval()
-    # model.bn_point1.eval()
+    # model.conv_point4.eval()
     model.bn_point2.eval()
     model.bn_point3.eval()
-    print("Visualizing Class separation")
+    # model.bn_point4.eval()
+    print("Visualizing Test Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
 
     print("Training Classifier")

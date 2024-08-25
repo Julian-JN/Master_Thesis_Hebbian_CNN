@@ -164,6 +164,7 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
     else:
         print("No ZCA")
         temp_transform = T.Compose([
+            T.RandomHorizontalFlip(),
             T.Resize(32),
             T.ToTensor(),
             T.Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])])

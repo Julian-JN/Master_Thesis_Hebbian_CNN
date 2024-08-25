@@ -333,7 +333,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"Residual-Soft-HebbianCNN-Depthwise",
+        f"Residual-Centre-Soft-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

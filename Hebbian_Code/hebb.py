@@ -4,8 +4,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
-import torch.nn.init as init
+import matplotlib.pyplot as plt
 
+import torch.nn.init as init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
@@ -15,6 +16,74 @@ def normalize(x, dim=None):
     nrm = (x ** 2).sum(dim=dim, keepdim=True) ** 0.5
     nrm[nrm == 0] = 1.
     return x / nrm
+
+
+def symmetric_pad(x, padding):
+    """
+    Performs reflective padding on the 4D input tensor x.
+
+    Args:
+        x (torch.Tensor): 4D input tensor to be padded (batch, channels, height, width).
+        padding (int): Amount of padding to be applied on each side.
+
+    Returns:
+        torch.Tensor: Padded input tensor.
+    """
+    if padding == 0:
+        return x
+
+    batch_size, channels, height, width = x.size()
+
+    # Determine left, right, top, and bottom padding
+    left_pad = right_pad = padding
+    top_pad = bottom_pad = padding
+
+    # Adjust right and bottom padding if necessary to maintain symmetry
+    if width % 2 != 0:
+        right_pad += 1
+    if height % 2 != 0:
+        bottom_pad += 1
+
+    # Perform reflective padding
+    padded_x = torch.cat((
+        x[:, :, :, :padding].flip(dims=[-1]),  # Left padding
+        x,
+        x[:, :, :, -padding:].flip(dims=[-1])  # Right padding
+    ), dim=-1)
+
+    padded_x = torch.cat((
+        padded_x[:, :, :padding, :].flip(dims=[-2]),  # Top padding
+        padded_x,
+        padded_x[:, :, -padding:, :].flip(dims=[-2])  # Bottom padding
+    ), dim=-2)
+    return padded_x
+
+
+def create_sm_kernel(kernel_size=5, sigma_e=1.2, sigma_i=1.4):
+    """
+    Create a surround modulation kernel that matches the paper's specifications.
+
+    :param kernel_size: Size of the SM kernel.
+    :param sigma_e: Standard deviation for the excitatory Gaussian.
+    :param sigma_i: Standard deviation for the inhibitory Gaussian.
+    :return: A normalized SM kernel.
+    """
+    center = kernel_size // 2
+    x, y = torch.meshgrid(torch.arange(kernel_size), torch.arange(kernel_size), indexing="ij")
+    x = x.float() - center
+    y = y.float() - center
+
+    # Compute the excitatory and inhibitory Gaussians
+    gaussian_e = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_e ** 2))
+    gaussian_i = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_i ** 2))
+
+    # Compute the Difference of Gaussians (DoG)
+    dog = gaussian_e / (2 * math.pi * sigma_e ** 2) - gaussian_i / (2 * math.pi * sigma_i ** 2)
+
+    # Normalize the DoG so that the center value is 1
+    sm_kernel = dog / dog[center, center]
+
+    return sm_kernel.unsqueeze(0).unsqueeze(0).to(device)
 
 
 class HebbianConv2d(nn.Module):
@@ -33,7 +102,7 @@ class HebbianConv2d(nn.Module):
     MODE_ADAPTIVE_THRESHOLD = "thresh"
     MODE_ANTIHARDWT = "antihard"
 
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0, groups = 1,
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0, groups=1,
                  w_nrm=False, bias=False, act=nn.Identity(),
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=1., wta_competition='similarity_spatial',
@@ -60,21 +129,27 @@ class HebbianConv2d(nn.Module):
         self.mode = mode
         self.out_channels = out_channels
         self.in_channels = in_channels
+        self.kernel = kernel_size
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
         self.dilation = _pair(dilation)
         self.padding = padding
         self.padding_mode = 'reflect'
+        if mode == "hard":
+            self.padding_mode = 'symmetric'
+
         self.F_padding = (padding, padding, padding, padding)
-        self.groups = 1 # in_channels for depthwise
+        self.groups = 1  # in_channels for depthwise
 
-        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        # self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+        weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
 
-        self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
-        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-        # Depthwise separable weights
-        # self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
+        # self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
+        # init.kaiming_uniform_(self.weight)
+
+        # self.weight = center_surround_init(out_channels, in_channels, kernel_size, 1)
+        print(self.weight.shape)
+
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -104,6 +179,21 @@ class HebbianConv2d(nn.Module):
         self.competition_k = 2
         self.competition_type = "hard"
 
+        if self.kernel !=1:
+            self.sm_kernel = create_sm_kernel()
+            self.register_buffer('surround_kernel', self.sm_kernel)
+            self.visualize_surround_modulation_kernel()
+
+    def visualize_surround_modulation_kernel(self):
+        """
+        Visualizes the surround modulation kernel using matplotlib.
+        """
+        sm_kernel = self.sm_kernel.squeeze().cpu().detach().numpy()
+        plt.figure(figsize=(5, 5))
+        plt.imshow(sm_kernel, cmap='jet')
+        plt.colorbar()
+        plt.title('Surround Modulation Kernel')
+        plt.show()
 
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
@@ -114,7 +204,8 @@ class HebbianConv2d(nn.Module):
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
-        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
@@ -129,6 +220,9 @@ class HebbianConv2d(nn.Module):
 
     def forward(self, x):
         y, w = self.compute_activation(x)
+        if self.kernel !=1:
+            y = F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
+                     padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
         if self.training:
             self.compute_update(x, y, w)
         return y
@@ -139,7 +233,8 @@ class HebbianConv2d(nn.Module):
 		resulting weight update is stored in buffer self.delta_w for later use.
 		"""
         if self.mode not in [self.MODE_HPCA, self.MODE_BASIC_HEBBIAN, self.MODE_WTA, self.MODE_BCM, self.MODE_SOFTWTA,
-                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION, self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD, self.MODE_ANTIHARDWT]:
+                             self.MODE_HARDWT, self.MODE_PRESYNAPTIC_COMPETITION, self.MODE_TEMPORAL_COMPETITION,
+                             self.MODE_ADAPTIVE_THRESHOLD, self.MODE_ANTIHARDWT]:
             raise NotImplementedError(
                 "Learning mode {} unavailable for {} layer".format(self.mode, self.__class__.__name__))
 
@@ -148,7 +243,7 @@ class HebbianConv2d(nn.Module):
             yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
             yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            if self.groups !=1:
+            if self.groups != 1:
                 yx = yx.mean(dim=1, keepdim=True)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
@@ -247,7 +342,7 @@ class HebbianConv2d(nn.Module):
             threshold = mean_sim + self.competition_k * std_sim
             # Determine winners at each spatial location
             winners = (similarities > threshold).float()
-            y_winners = winners * similarities # instead if similarity
+            y_winners = winners * similarities  # instead if similarity
             # Shape: [batch_size, out_channels, height_out, width_out]
             if self.competition_type == 'hard':
                 y_winners = y_winners.view(batch_size, out_channels, -1)
@@ -363,11 +458,11 @@ class HebbianConv2d(nn.Module):
             # Turn winner neurons' activations back to hebbian
             flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
             # Reshape softwta activations
-            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0,1)
+            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
                           dilation=self.stride).transpose(0, 1)  # Compute yu
-            if self.groups !=1:
+            if self.groups != 1:
                 yx = yx.mean(dim=1, keepdim=True)
             yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
             # Compute update
@@ -396,7 +491,7 @@ class HebbianConv2d(nn.Module):
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), hardwta_activs.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
-            if self.groups !=1:
+            if self.groups != 1:
                 yx = yx.mean(dim=1, keepdim=True)
             # Compute yu
             yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
@@ -406,11 +501,51 @@ class HebbianConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
+        # if self.mode == self.MODE_HARDWT:
+        #     # 1. Get the shapes
+        #     batch_size, out_channels, height_out, width_out = y.shape
+        #     # 2. Find the winner neurons
+        #     y_flat = y.view(batch_size * out_channels, -1)  # Flatten spatial dimensions
+        #     win_neurons = torch.argmax(y_flat, dim=1)  # Shape: [batch_size * out_channels]
+        #     # 3. Create the initial WTA mask
+        #     wta_mask = F.one_hot(win_neurons, num_classes=height_out * width_out).view(batch_size, out_channels,
+        #                                                                                height_out, width_out).float()
+        #     if self.kernel_size != 1:
+        #         # 4. Find winning spatial locations (h, w) for each batch and channel
+        #         win_h = win_neurons // width_out  # Shape: [batch_size * out_channels]
+        #         win_w = win_neurons % width_out  # Shape: [batch_size * out_channels]
+        #         # 5. Create spatial indices
+        #         y_indices = torch.arange(height_out, device=y.device).view(1, 1, height_out, 1)
+        #         x_indices = torch.arange(width_out, device=y.device).view(1, 1, 1, width_out)
+        #         # 6. Calculate distances from winning neurons
+        #         win_h = win_h.view(batch_size, out_channels, 1, 1)  # Reshape to allow broadcasting
+        #         win_w = win_w.view(batch_size, out_channels, 1, 1)  # Reshape to allow broadcasting
+        #         distances = torch.sqrt((y_indices - win_h.float()) ** 2 + (x_indices - win_w.float()) ** 2)
+        #         # 7. Create the lateral inhibition mask
+        #         decay_factor = 0.5  # Adjust this value as needed
+        #         lateral_mask = torch.exp(-decay_factor * distances)
+        #         # 8. Combine the WTA mask with the lateral inhibition mask
+        #         final_mask = lateral_mask
+        #         # 9. Apply the mask to y
+        #         y_wta = y * final_mask
+        #     else:
+        #         y_wta = y * wta_mask
+        #     # 10. Compute yx using conv2d
+        #     yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
+        #                   stride=self.dilation, dilation=self.stride).transpose(0, 1)
+        #     if self.groups != 1:
+        #         yx = yx.mean(dim=1, keepdim=True)
+        #     # 11. Compute yu
+        #     yu = torch.sum(y_wta, dim=(0, 2, 3))
+        #     # 12. Compute update
+        #     update = yx - yu.view(-1, 1, 1, 1) * weight
+        #     # 13. Normalization
+        #     update.div_(torch.abs(update).amax() + 1e-30)
+        #     self.delta_w += update
+
         if self.mode == self.MODE_HARDWT:
             # Compute cosine similarity
-            # y = self.cos_sim2d(x)
             batch_size, out_channels, height_out, width_out = y.shape
-            # WTA competition using cosine similarity
             y_flat = y.transpose(0, 1).reshape(out_channels, -1)
             win_neurons = torch.argmax(y_flat, dim=0)
             wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
@@ -420,7 +555,7 @@ class HebbianConv2d(nn.Module):
             # Standard convolution
             yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
-            if self.groups !=1:
+            if self.groups != 1:
                 yx = yx.mean(dim=1, keepdim=True)
             # Compute yu
             yu = torch.sum(y_wta, dim=(0, 2, 3))

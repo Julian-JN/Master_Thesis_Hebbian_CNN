@@ -17,6 +17,98 @@ def normalize(x, dim=None):
     return x / nrm
 
 
+def symmetric_pad(x, padding):
+    """
+    Performs reflective padding on the 4D input tensor x.
+
+    Args:
+        x (torch.Tensor): 4D input tensor to be padded (batch, channels, height, width).
+        padding (int): Amount of padding to be applied on each side.
+
+    Returns:
+        torch.Tensor: Padded input tensor.
+    """
+    if padding == 0:
+        return x
+
+    batch_size, channels, height, width = x.size()
+
+    # Determine left, right, top, and bottom padding
+    left_pad = right_pad = padding
+    top_pad = bottom_pad = padding
+
+    # Adjust right and bottom padding if necessary to maintain symmetry
+    if width % 2 != 0:
+        right_pad += 1
+    if height % 2 != 0:
+        bottom_pad += 1
+
+    # Perform reflective padding
+    padded_x = torch.cat((
+        x[:, :, :, :padding].flip(dims=[-1]),  # Left padding
+        x,
+        x[:, :, :, -padding:].flip(dims=[-1])  # Right padding
+    ), dim=-1)
+
+    padded_x = torch.cat((
+        padded_x[:, :, :padding, :].flip(dims=[-2]),  # Top padding
+        padded_x,
+        padded_x[:, :, -padding:, :].flip(dims=[-2])  # Bottom padding
+    ), dim=-2)
+
+    return padded_x
+
+
+def center_surround_init(out_channels, in_channels, kernel_size, groups=1):
+    # Calculate weight range
+    weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+
+    # Calculate sigma based on kernel size (using equation 3 from the paper)
+    gamma = torch.empty(out_channels).uniform_(0, 0.5)
+    sigma = (kernel_size / 4) * torch.sqrt((1 - gamma ** 2) / (-torch.log(gamma)))
+
+    # Create meshgrid for x and y coordinates
+    x = torch.linspace(-(kernel_size - 1) / 2, (kernel_size - 1) / 2, kernel_size)
+    y = torch.linspace(-(kernel_size - 1) / 2, (kernel_size - 1) / 2, kernel_size)
+    xx, yy = torch.meshgrid(x, y, indexing='ij')
+
+    # Calculate center and surround Gaussians
+    center = torch.exp(-(xx ** 2 + yy ** 2) / (2 * (gamma.view(-1, 1, 1) * sigma.view(-1, 1, 1)) ** 2))
+    surround = torch.exp(-(xx ** 2 + yy ** 2) / (2 * sigma.view(-1, 1, 1) ** 2))
+
+    # Calculate DoG (Difference of Gaussians)
+    dog = center - surround
+
+    # Normalize DoG
+    ac = torch.sum(torch.clamp(dog, min=0))
+    as_ = torch.sum(-torch.clamp(dog, max=0))
+    dog = weight_range * 0.5 * dog / (ac + as_)
+
+    # Assign excitatory (positive) or inhibitory (negative) centers
+    center_type = torch.cat([torch.ones(out_channels // 2), -torch.ones(out_channels - out_channels // 2)])
+    center_type = center_type[torch.randperm(out_channels)].view(-1, 1, 1)
+    dog = dog * center_type
+
+    # Repeat for in_channels and reshape to match conv2d weight shape
+    dog = dog.unsqueeze(1).repeat(1, in_channels // groups, 1, 1)
+    dog = dog.reshape(out_channels, in_channels // groups, kernel_size, kernel_size)
+
+    return nn.Parameter(dog)
+
+def create_sm_kernel(kernel_size=5, sigma_e=1.2, sigma_i=1.4):
+    center = kernel_size // 2
+    x, y = torch.meshgrid(torch.arange(kernel_size), torch.arange(kernel_size))
+    x = x.float() - center
+    y = y.float() - center
+
+    gaussian_e = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_e ** 2))
+    gaussian_i = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_i ** 2))
+
+    dog = gaussian_e / (2 * math.pi * sigma_e ** 2) - gaussian_i / (2 * math.pi * sigma_i ** 2)
+    sm_kernel = dog / dog[center, center]
+
+    return sm_kernel.unsqueeze(0).unsqueeze(0).to(device)
+
 # Doubts:
 # Visualizing weights, as separated between channels and spatial
 #
@@ -64,20 +156,27 @@ class HebbianDepthConv2d(nn.Module):
         self.mode = mode
         self.out_channels = out_channels
         self.in_channels = in_channels
+        self.kernel = kernel_size
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
         self.dilation = _pair(dilation)
         self.padding = padding
         self.padding_mode = 'reflect'
+        if mode == "hard":
+            self.padding_mode = 'symmetric'
         self.F_padding = (padding, padding, padding, padding)
         self.groups = in_channels # in_channels for depthwise
 
-        # Depthwise separable weights
-        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        # self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
+        # # Depthwise separable weights
+        weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
 
-        self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
-        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        # self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
+        # init.kaiming_uniform_(self.weight)
+
+        # self.weight = center_surround_init(in_channels, 1, kernel_size, 1)
+        # print(self.weight.shape)
+
 
         self.w_nrm = w_nrm
         self.act = act
@@ -108,6 +207,10 @@ class HebbianDepthConv2d(nn.Module):
         self.competition_k = 2
         self.competition_type = "hard"
 
+        if kernel_size !=1:
+            self.sm_kernel = create_sm_kernel()
+            self.register_buffer('surround_kernel', self.sm_kernel)
+
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
@@ -117,7 +220,8 @@ class HebbianDepthConv2d(nn.Module):
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
-        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
@@ -132,6 +236,9 @@ class HebbianDepthConv2d(nn.Module):
 
     def forward(self, x):
         y_depthwise, w = self.compute_activation(x)
+        if self.kernel !=1:
+            y_depthwise = F.conv2d(y_depthwise, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
+                     padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
         if self.training:
             self.compute_update(x, y_depthwise, w)
         return y_depthwise

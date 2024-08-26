@@ -169,7 +169,7 @@ class HebbianDepthConv2d(nn.Module):
 
         # # Depthwise separable weights
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
+        self.weight = nn.Parameter(weight_range * torch.abs(torch.randn(in_channels, 1, *self.kernel_size)))
 
         # self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
@@ -225,7 +225,7 @@ class HebbianDepthConv2d(nn.Module):
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
-        w = self.weight
+        w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y_depthwise = self.act(self.apply_weights(x, w))

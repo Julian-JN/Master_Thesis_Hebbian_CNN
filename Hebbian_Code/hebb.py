@@ -142,7 +142,7 @@ class HebbianConv2d(nn.Module):
         self.groups = 1  # in_channels for depthwise
 
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+        self.weight = nn.Parameter(weight_range * torch.abs(torch.randn((out_channels, in_channels // self.groups, *self.kernel_size))))
 
         # self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
@@ -211,7 +211,7 @@ class HebbianConv2d(nn.Module):
     def compute_activation(self, x):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
-        if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
+        if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
         y = self.act(self.apply_weights(x, w))
         # Channel expansion with 1x1 conv
         # For cosine similarity activation if cosine is to be used for next layer
@@ -655,6 +655,7 @@ class HebbianConv2d(nn.Module):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
 
     def compute_presynaptic_competition(self, m):
+        # It promotes diversity among output channels, as they compete for the strength of connection to each input feature.
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
             return m / (m.sum(dim=0, keepdim=True) + 1e-6)
@@ -665,9 +666,61 @@ class HebbianConv2d(nn.Module):
         else:
             raise ValueError(f"Unknown competition type: {self.competition_type}")
 
+    def compute_presynaptic_competition_spatial(self, m):
+        # The spatial competition encourages each input-output channel pair to focus on specific spatial patterns.
+        m = 1 / (torch.abs(m) + 1e-6)
+        if self.presynaptic_competition_type == 'linear':
+            # Sum across spatial dimensions (last two dimensions)
+            return m / (m.sum(dim=(-2, -1), keepdim=True) + 1e-6)
+        elif self.presynaptic_competition_type == 'softmax':
+            # Reshape to combine spatial dimensions
+            shape = m.shape
+            m_flat = m.view(*shape[:-2], -1)
+            # Apply softmax across spatial dimensions
+            m_comp = F.softmax(m_flat, dim=-1)
+            # Reshape back to original shape
+            return m_comp.view(*shape)
+        elif self.presynaptic_competition_type == 'lp_norm':
+            # Normalize across spatial dimensions
+            return F.normalize(m, p=2, dim=(-2, -1))
+        else:
+            raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
+
+    def compute_presynaptic_competition_input_channels(self, m):
+        # The input channel competition promotes specialization of each output channel across different input features.
+        m = 1 / (torch.abs(m) + 1e-6)
+        if self.presynaptic_competition_type == 'linear':
+            # Sum across input channel dimension
+            return m / (m.sum(dim=1, keepdim=True) + 1e-6)
+        elif self.presynaptic_competition_type == 'softmax':
+            # Apply softmax across input channels
+            return F.softmax(m, dim=1)
+        elif self.presynaptic_competition_type == 'lp_norm':
+            # Normalize across input channels
+            return F.normalize(m, p=2, dim=1)
+        else:
+            raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
+
+    def compute_presynaptic_competition_global(self, m):
+        # The global competition creates a more intense competition where every weight competes with all others,
+        # potentially leading to very sparse but highly specialized connections.
+        m = 1 / (torch.abs(m) + 1e-6)
+        if self.presynaptic_competition_type == 'linear':
+            # Global sum across all dimensions
+            return m / (m.sum() + 1e-6)
+        elif self.presynaptic_competition_type == 'softmax':
+            # Flatten and apply softmax globally
+            m_flat = m.view(-1)
+            return F.softmax(m_flat, dim=0).view(m.shape)
+        elif self.presynaptic_competition_type == 'lp_norm':
+            # Global normalization
+            return F.normalize(m.view(-1), p=2).view(m.shape)
+        else:
+            raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
+
     def cos_sim2d(self, x):
         # Unfold the input
-        w = self.weight
+        w = self.weight.abs()
         x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
         # x_unf shape: [batch_size, C*k*k, H*W]
         batch_size, channels_x_kernel, hw = x_unf.shape

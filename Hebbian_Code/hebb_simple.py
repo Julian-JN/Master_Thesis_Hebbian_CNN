@@ -62,7 +62,7 @@ class HebbianConv2d(nn.Module):
 
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
         self.weight = nn.Parameter(
-            weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
+            weight_range * torch.abs(torch.randn((out_channels, in_channels // self.groups, *self.kernel_size))))
 
         print(self.weight.shape)
 
@@ -92,9 +92,6 @@ class HebbianConv2d(nn.Module):
         self.competition_k = 2
         self.competition_type = "hard"
 
-    def apply_lebesgue_norm(self, w):
-        return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
-
     def apply_weights(self, x, w):
         """
 		This function provides the logic for combining input x and weight w
@@ -104,7 +101,7 @@ class HebbianConv2d(nn.Module):
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
-        w = self.weight
+        w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
@@ -147,33 +144,7 @@ class HebbianConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
-        if self.mode == self.MODE_SOFTWTA:
-            batch_size, out_channels, height_out, width_out = y.shape
-            # Compute soft WTA using softmax
-            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
-            flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
-            flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
-            # Find winning neurons
-            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
-            competing_idx = torch.arange(flat_weighted_inputs.size(1))
-            # Turn winner neurons' activations back to hebbian
-            flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
-            # Reshape softwta activations
-            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
-            # Compute yx using conv2d
-            yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
-                          dilation=self.stride).transpose(0, 1)  # Compute yu
-            if self.groups != 1:
-                yx = yx.mean(dim=1, keepdim=True)
-            yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
-            # Compute update
-            update = yx - yu.view(-1, 1, 1, 1) * weight
-            # Normalization
-            update.div_(torch.abs(update).amax() + 1e-30)
-            self.delta_w += update
-
         if self.mode == self.MODE_HARDWT:
-            # Compute cosine similarity
             batch_size, out_channels, height_out, width_out = y.shape
             y_flat = y.transpose(0, 1).reshape(out_channels, -1)
             win_neurons = torch.argmax(y_flat, dim=0)
@@ -181,7 +152,6 @@ class HebbianConv2d(nn.Module):
             wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
             y_wta = y * wta_mask
             # Compute yx using conv2d
-            # Standard convolution
             yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
             if self.groups != 1:

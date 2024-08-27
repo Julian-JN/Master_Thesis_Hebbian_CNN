@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 
 # from hebb import HebbianConv2d
+# from hebb_abs import HebbianConv2d
 from hebb_ex_in import HebbianConv2d
 from hebb_depthwise import HebbianDepthConv2d
 
@@ -168,9 +169,18 @@ class Net_Depthwise(nn.Module):
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 25 filters (or less if there are fewer)
         # tensor = tensor[:25]
-        tensor = torch.cat((tensor[:20], tensor[-5:]))
+        excitatory = tensor[:20]
+        inhibitory = tensor[-5:]
+        # Symmetric normalization for excitatory weights
+        max_abs_exc = torch.max(torch.abs(excitatory))
+        norm_exc = excitatory / (max_abs_exc + 1e-8)
+        # Symmetric normalization for inhibitory weights
+        max_abs_inh = torch.max(torch.abs(inhibitory))
+        norm_inh = inhibitory / (max_abs_inh + 1e-8)
+        tensor = torch.cat((norm_exc, norm_inh))
+        # tensor = torch.cat((tensor[:20], tensor[-5:]))
         # Normalize the tensor
-        tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
+        # tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
         # Move to CPU and convert to numpy
         tensor = tensor.cpu().detach().numpy()
 

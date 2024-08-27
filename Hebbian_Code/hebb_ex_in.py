@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
+import matplotlib.pyplot as plt
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
@@ -12,6 +14,74 @@ def normalize(x, dim=None):
     nrm = (x ** 2).sum(dim=dim, keepdim=True) ** 0.5
     nrm[nrm == 0] = 1.
     return x / nrm
+
+
+def symmetric_pad(x, padding):
+    """
+    Performs reflective padding on the 4D input tensor x.
+
+    Args:
+        x (torch.Tensor): 4D input tensor to be padded (batch, channels, height, width).
+        padding (int): Amount of padding to be applied on each side.
+
+    Returns:
+        torch.Tensor: Padded input tensor.
+    """
+    if padding == 0:
+        return x
+
+    batch_size, channels, height, width = x.size()
+
+    # Determine left, right, top, and bottom padding
+    left_pad = right_pad = padding
+    top_pad = bottom_pad = padding
+
+    # Adjust right and bottom padding if necessary to maintain symmetry
+    if width % 2 != 0:
+        right_pad += 1
+    if height % 2 != 0:
+        bottom_pad += 1
+
+    # Perform reflective padding
+    padded_x = torch.cat((
+        x[:, :, :, :padding].flip(dims=[-1]),  # Left padding
+        x,
+        x[:, :, :, -padding:].flip(dims=[-1])  # Right padding
+    ), dim=-1)
+
+    padded_x = torch.cat((
+        padded_x[:, :, :padding, :].flip(dims=[-2]),  # Top padding
+        padded_x,
+        padded_x[:, :, -padding:, :].flip(dims=[-2])  # Bottom padding
+    ), dim=-2)
+    return padded_x
+
+
+def create_sm_kernel(kernel_size=5, sigma_e=1.2, sigma_i=1.4):
+    """
+    Create a surround modulation kernel that matches the paper's specifications.
+
+    :param kernel_size: Size of the SM kernel.
+    :param sigma_e: Standard deviation for the excitatory Gaussian.
+    :param sigma_i: Standard deviation for the inhibitory Gaussian.
+    :return: A normalized SM kernel.
+    """
+    center = kernel_size // 2
+    x, y = torch.meshgrid(torch.arange(kernel_size), torch.arange(kernel_size), indexing="ij")
+    x = x.float() - center
+    y = y.float() - center
+
+    # Compute the excitatory and inhibitory Gaussians
+    gaussian_e = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_e ** 2))
+    gaussian_i = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_i ** 2))
+
+    # Compute the Difference of Gaussians (DoG)
+    dog = gaussian_e / (2 * math.pi * sigma_e ** 2) - gaussian_i / (2 * math.pi * sigma_i ** 2)
+
+    # Normalize the DoG so that the center value is 1
+    sm_kernel = dog / dog[center, center]
+
+    return sm_kernel.unsqueeze(0).unsqueeze(0).to(device)
 
 
 class HebbianConv2d(nn.Module):
@@ -48,6 +118,7 @@ class HebbianConv2d(nn.Module):
         # spatial competition is the appropriate comp modes
         self.in_channels = in_channels
         self.out_channels = out_channels
+        self.kernel = kernel_size
         self.kernel_size = _pair(kernel_size)
         self.stride = _pair(stride)
         self.dilation = _pair(dilation)
@@ -66,9 +137,37 @@ class HebbianConv2d(nn.Module):
         self.excitatory_channels = int(out_channels * 0.8)
         self.inhibitory_channels = out_channels - self.excitatory_channels
 
-        # Initialize weights
-        weight_range = 1 / (in_channels * kernel_size * kernel_size) ** 0.5
-        self.weight = nn.Parameter(weight_range * torch.randn((out_channels, in_channels // groups, *self.kernel_size)))
+        # # Initialize weights similar to the purely excitatory model
+        # # TODO separate weight distribution initialisation for inhibitory and excitatory
+        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # initial_weights = weight_range * torch.abs(
+        #     torch.randn((out_channels, in_channels // groups, *self.kernel_size)))
+        # # Make inhibitory weights negative
+        # initial_weights[self.excitatory_channels:] *= -1
+        # self.weight = nn.Parameter(initial_weights)
+
+        # Define weight range based on the same distribution
+        weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # Initialize excitatory weights
+        excitatory_weights = weight_range * torch.abs(
+            torch.randn((self.excitatory_channels, in_channels // groups, *self.kernel_size))
+        )
+        # Initialize inhibitory weights (same distribution, but will be made negative)
+        inhibitory_weights = weight_range * torch.abs(
+            torch.randn((out_channels - self.excitatory_channels, in_channels // groups, *self.kernel_size))
+        )
+        inhibitory_weights *= -1  # Make inhibitory weights negative
+        # Concatenate excitatory and inhibitory weights
+        initial_weights = torch.cat((excitatory_weights, inhibitory_weights), dim=0)
+        # Assign to the module's weight parameter
+        self.weight = nn.Parameter(initial_weights)
+
+
+        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # initial_weights = weight_range * torch.randn((out_channels, in_channels // groups, *self.kernel_size))
+        # initial_weights[:self.excitatory_channels] = torch.abs(initial_weights[:self.excitatory_channels])
+        # initial_weights[self.excitatory_channels:] = -torch.abs(initial_weights[self.excitatory_channels:])
+        # self.weight = nn.Parameter(initial_weights)
 
         # Initialize signs for excitatory and inhibitory neurons
         self.sign = nn.Parameter(torch.ones_like(self.weight), requires_grad=False)
@@ -76,12 +175,28 @@ class HebbianConv2d(nn.Module):
 
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
+        if self.kernel != 1:
+            self.sm_kernel = create_sm_kernel()
+            self.register_buffer('surround_kernel', self.sm_kernel)
+            self.visualize_surround_modulation_kernel()
+
+    def visualize_surround_modulation_kernel(self):
+        """
+        Visualizes the surround modulation kernel using matplotlib.
+        """
+        sm_kernel = self.sm_kernel.squeeze().cpu().detach().numpy()
+        plt.figure(figsize=(5, 5))
+        plt.imshow(sm_kernel, cmap='jet')
+        plt.colorbar()
+        plt.title('Surround Modulation Kernel')
+        plt.show()
+
     def apply_weights(self, x, w):
         """
 		This function provides the logic for combining input x and weight w
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
-        x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
+        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
@@ -95,6 +210,9 @@ class HebbianConv2d(nn.Module):
 
     def forward(self, x):
         y, w = self.compute_activation(x)
+        if self.kernel !=1:
+            y = F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
+                     padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
         if self.training:
             self.compute_update(x, y, w)
         return y
@@ -185,7 +303,7 @@ class HebbianConv2d(nn.Module):
     @torch.no_grad()
     def local_update(self):
         # Apply update while respecting weight signs
-        new_weight = self.weight + self.lr* self.alpha * self.delta_w * self.sign
+        new_weight = self.weight + self.lr * self.alpha * self.delta_w * self.sign
         # Ensure weights maintain their sign
         new_weight *= self.sign
         # Update weights

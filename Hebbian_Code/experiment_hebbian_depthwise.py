@@ -395,8 +395,13 @@ if __name__ == "__main__":
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-            # optimize
+
             unsup_optimizer.step()
+            # # Ensure weights are positive after the update
+            # for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
+            #     with torch.no_grad():
+            #         layer.weight.data.abs_()
+            # optimize
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')

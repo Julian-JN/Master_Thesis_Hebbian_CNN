@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.decomposition import PCA
 
-from hebb import HebbianConv2d
+# from hebb import HebbianConv2d
+from hebb_ex_in import HebbianConv2d
 from hebb_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
@@ -166,7 +167,8 @@ class Net_Depthwise(nn.Module):
 
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 25 filters (or less if there are fewer)
-        tensor = tensor[:25]
+        # tensor = tensor[:25]
+        tensor = torch.cat((tensor[:20], tensor[-5:]))
         # Normalize the tensor
         tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
         # Move to CPU and convert to numpy

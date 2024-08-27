@@ -47,6 +47,9 @@ def print_weight_statistics(layer, layer_name):
 def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
     weights = layer.weight.data
     delta_w = layer.delta_w.data
+    print(f"Layer {layer_name}")
+    print(delta_w.mean())
+    print(delta_w.max())
 
     if not detailed_mode:
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -330,7 +333,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"WTA-Pre-Abs-Surround-Hard-HebbianCNN-Depthwise",
+        f"WTA-Ex/In-Surround-Hard-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -394,11 +397,6 @@ if __name__ == "__main__":
                     layer.local_update()
             # optimize
             unsup_optimizer.step()
-            # Ensure weights are positive after the update
-            for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
-                with torch.no_grad():
-                    layer.weight.data.abs_()
-
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')

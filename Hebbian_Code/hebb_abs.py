@@ -544,6 +544,7 @@ class HebbianConv2d(nn.Module):
         #     self.delta_w += update
 
         if self.mode == self.MODE_HARDWT:
+            # Compute cosine similarity
             batch_size, out_channels, height_out, width_out = y.shape
             y_flat = y.transpose(0, 1).reshape(out_channels, -1)
             win_neurons = torch.argmax(y_flat, dim=0)

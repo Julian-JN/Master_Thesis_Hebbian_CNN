@@ -5,6 +5,7 @@ import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 import matplotlib.pyplot as plt
 
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
 
@@ -16,24 +17,77 @@ def normalize(x, dim=None):
 
 
 def symmetric_pad(x, padding):
+    """
+    Performs reflective padding on the 4D input tensor x.
+
+    Args:
+        x (torch.Tensor): 4D input tensor to be padded (batch, channels, height, width).
+        padding (int): Amount of padding to be applied on each side.
+
+    Returns:
+        torch.Tensor: Padded input tensor.
+    """
     if padding == 0:
         return x
-    return F.pad(x, (padding,) * 4, mode='reflect')
+
+    batch_size, channels, height, width = x.size()
+
+    # Determine left, right, top, and bottom padding
+    left_pad = right_pad = padding
+    top_pad = bottom_pad = padding
+
+    # Adjust right and bottom padding if necessary to maintain symmetry
+    if width % 2 != 0:
+        right_pad += 1
+    if height % 2 != 0:
+        bottom_pad += 1
+
+    # Perform reflective padding
+    padded_x = torch.cat((
+        x[:, :, :, :padding].flip(dims=[-1]),  # Left padding
+        x,
+        x[:, :, :, -padding:].flip(dims=[-1])  # Right padding
+    ), dim=-1)
+
+    padded_x = torch.cat((
+        padded_x[:, :, :padding, :].flip(dims=[-2]),  # Top padding
+        padded_x,
+        padded_x[:, :, -padding:, :].flip(dims=[-2])  # Bottom padding
+    ), dim=-2)
+    return padded_x
 
 
 def create_sm_kernel(kernel_size=5, sigma_e=1.2, sigma_i=1.4):
+    """
+    Create a surround modulation kernel that matches the paper's specifications.
+
+    :param kernel_size: Size of the SM kernel.
+    :param sigma_e: Standard deviation for the excitatory Gaussian.
+    :param sigma_i: Standard deviation for the inhibitory Gaussian.
+    :return: A normalized SM kernel.
+    """
     center = kernel_size // 2
     x, y = torch.meshgrid(torch.arange(kernel_size), torch.arange(kernel_size), indexing="ij")
     x = x.float() - center
     y = y.float() - center
+
+    # Compute the excitatory and inhibitory Gaussians
     gaussian_e = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_e ** 2))
     gaussian_i = torch.exp(-(x ** 2 + y ** 2) / (2 * sigma_i ** 2))
+
+    # Compute the Difference of Gaussians (DoG)
     dog = gaussian_e / (2 * math.pi * sigma_e ** 2) - gaussian_i / (2 * math.pi * sigma_i ** 2)
+
+    # Normalize the DoG so that the center value is 1
     sm_kernel = dog / dog[center, center]
+
     return sm_kernel.unsqueeze(0).unsqueeze(0).to(device)
 
 
 class HebbianConv2d(nn.Module):
+    """
+    	A 2d convolutional layer that learns through Hebbian plasticity
+    	"""
     MODE_BASIC_HEBBIAN = 'basic'
     MODE_SOFTWTA = 'soft'
     MODE_HARDWT = "hard"
@@ -45,6 +99,7 @@ class HebbianConv2d(nn.Module):
                  lateral_competition="filter",
                  lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1.):
         super(HebbianConv2d, self).__init__()
+
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel = kernel_size
@@ -54,6 +109,7 @@ class HebbianConv2d(nn.Module):
         self.padding = padding
         self.padding_mode = 'reflect'
         self.F_padding = (padding, padding, padding, padding)
+
         self.groups = groups
         self.w_nrm = w_nrm
         self.act = act
@@ -62,131 +118,141 @@ class HebbianConv2d(nn.Module):
         self.lr = 0.1
         self.presynaptic_weights = False
 
+        # Define the number of excitatory and inhibitory neurons
         self.excitatory_channels = int(out_channels * 0.8)
         self.inhibitory_channels = out_channels - self.excitatory_channels
 
         # Initialize weights
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.w_ee = nn.Parameter(
-            weight_range * torch.abs(torch.randn((self.excitatory_channels, in_channels // groups, *self.kernel_size))))
-        self.w_ei = nn.Parameter(weight_range * torch.abs(
-            torch.randn((self.inhibitory_channels, self.excitatory_channels // groups, *self.kernel_size))))
-        self.w_ie = nn.Parameter(-weight_range * torch.abs(
-            torch.randn((self.excitatory_channels, self.inhibitory_channels // groups, *self.kernel_size))))
 
-        # Initialize delta weights
-        self.register_buffer('delta_w_ee', torch.zeros_like(self.w_ee))
-        self.register_buffer('delta_w_ei', torch.zeros_like(self.w_ei))
-        self.register_buffer('delta_w_ie', torch.zeros_like(self.w_ie))
+        # Excitatory to excitatory weights (E->E)
+        self.weight_ee = nn.Parameter(weight_range * torch.abs(
+            torch.randn((self.excitatory_channels, in_channels // groups, *self.kernel_size))))
+        self.weight = self.weight_ee
+
+        # Excitatory to inhibitory weights (E->I)
+        self.weight_ei = nn.Parameter(weight_range * torch.abs(
+            torch.randn((self.inhibitory_channels, in_channels // groups, *self.kernel_size))))
+
+        # Inhibitory to excitatory weights (I->E)
+        self.weight_ie = nn.Parameter(-weight_range * torch.abs(
+            torch.randn((self.excitatory_channels, self.inhibitory_channels, *self.kernel_size))))
+
+        # Initialize delta weights for updates
+        self.register_buffer('delta_w_ee', torch.zeros_like(self.weight_ee))
+        self.register_buffer('delta_w_ei', torch.zeros_like(self.weight_ei))
+        self.register_buffer('delta_w_ie', torch.zeros_like(self.weight_ie))
 
         if self.kernel != 1:
             self.sm_kernel = create_sm_kernel()
             self.register_buffer('surround_kernel', self.sm_kernel)
+            self.visualize_surround_modulation_kernel()
 
-        # Initialize feedforward inhibition strength
-        self.ff_inhibition_strength = nn.Parameter(torch.ones(self.inhibitory_channels, 1, 1, 1) * 0.1)
+    def visualize_surround_modulation_kernel(self):
+        """
+        Visualizes the surround modulation kernel using matplotlib.
+        """
+        sm_kernel = self.sm_kernel.squeeze().cpu().detach().numpy()
+        plt.figure(figsize=(5, 5))
+        plt.imshow(sm_kernel, cmap='jet')
+        plt.colorbar()
+        plt.title('Surround Modulation Kernel')
+        plt.show()
 
     def forward(self, x):
-        # Excitatory to excitatory connections
-        y_e = self.apply_weights(x, self.w_ee)
-        y_e = self.act(y_e)
+        # Apply excitatory to excitatory weights
+        y_ee = self.apply_weights(x, self.weight_ee)
 
-        # Excitatory to inhibitory connections
-        y_i = self.apply_weights(y_e, self.w_ei)
-        y_i = F.relu(y_i)  # Ensure non-negative activation for inhibitory neurons
+        # Apply excitatory to inhibitory weights
+        y_ei = self.apply_weights(x, self.weight_ei)
 
-        # Inhibitory to excitatory connections (feedforward inhibition)
-        y_ie = self.apply_weights(y_i, self.w_ie)
+        # Apply inhibitory to excitatory weights
+        self.ie_padding = (self.kernel_size[0] - 1) // 2, (self.kernel_size[1] - 1) // 2
+        y_ie = F.conv2d(y_ei, self.weight_ie, None, self.stride, self.ie_padding, self.dilation, self.groups)
 
-        # Combine excitatory and inhibitory influences
-        y = y_e + y_ie
+        # Combine excitatory and inhibitory inputs
+        y = y_ee - y_ie
+
+        # Apply activation function
+        y = self.act(y)
 
         if self.kernel != 1:
-            y = F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
-                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
+            y = F.conv2d(y, self.sm_kernel.repeat(self.excitatory_channels, 1, 1, 1),
+                         padding=self.sm_kernel.size(-1) // 2, groups=self.excitatory_channels)
 
         if self.training:
-            self.compute_update(x, y_e, y_i, y)
+            self.compute_update(x, y, y_ei)
 
         return y
 
     def apply_weights(self, x, w):
-        if self.w_nrm:
-            w = normalize(w, dim=(1, 2, 3))
         x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
-    def compute_update(self, x, y_e, y_i, y):
+    def compute_update(self, x, y, y_i):
         if self.mode == self.MODE_HARDWT:
             batch_size, _, height_out, width_out = y.shape
 
             # WTA for excitatory channels
-            y_exc_flat = y_e.transpose(0, 1).reshape(self.excitatory_channels, -1)
-            win_neurons_exc = torch.argmax(y_exc_flat, dim=0)
-            wta_mask_exc = F.one_hot(win_neurons_exc, num_classes=self.excitatory_channels).float()
-            wta_mask_exc = wta_mask_exc.transpose(0, 1).view(self.excitatory_channels, batch_size, height_out,
-                                                             width_out).transpose(0, 1)
-            y_wta_exc = y_e * wta_mask_exc
+            y_flat = y.transpose(0, 1).reshape(self.excitatory_channels, -1)
+            win_neurons = torch.argmax(y_flat, dim=0)
+            wta_mask = F.one_hot(win_neurons, num_classes=self.excitatory_channels).float()
+            wta_mask = wta_mask.transpose(0, 1).view(self.excitatory_channels, batch_size, height_out,
+                                                     width_out).transpose(0, 1)
+            y_wta = y * wta_mask
 
             # WTA for inhibitory channels
-            y_inh_flat = y_i.transpose(0, 1).reshape(self.inhibitory_channels, -1)
-            win_neurons_inh = torch.argmax(torch.abs(y_inh_flat), dim=0)
-            wta_mask_inh = F.one_hot(win_neurons_inh, num_classes=self.inhibitory_channels).float()
-            wta_mask_inh = wta_mask_inh.transpose(0, 1).view(self.inhibitory_channels, batch_size, height_out,
-                                                             width_out).transpose(0, 1)
-            y_wta_inh = y_i * wta_mask_inh
+            y_i_flat = y_i.transpose(0, 1).reshape(self.inhibitory_channels, -1)
+            win_neurons_i = torch.argmax(torch.abs(y_i_flat), dim=0)
+            wta_mask_i = F.one_hot(win_neurons_i, num_classes=self.inhibitory_channels).float()
+            wta_mask_i = wta_mask_i.transpose(0, 1).view(self.inhibitory_channels, batch_size, height_out,
+                                                         width_out).transpose(0, 1)
+            y_i_wta = y_i * wta_mask_i
 
-            # Compute updates
-            yx_ee = F.conv2d(x.transpose(0, 1), y_wta_exc.transpose(0, 1), padding=0, stride=self.dilation,
-                             dilation=self.stride).transpose(0, 1)
-            yx_ei = F.conv2d(y_wta_exc.transpose(0, 1), y_wta_inh.transpose(0, 1), padding=0, stride=self.dilation,
-                             dilation=self.stride).transpose(0, 1)
-            yx_ie = F.conv2d(y_wta_inh.transpose(0, 1), y.transpose(0, 1), padding=0, stride=self.dilation,
-                             dilation=self.stride).transpose(0, 1)
-
-            yu_exc = torch.sum(y_wta_exc, dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            yu_inh = torch.sum(torch.abs(y_wta_inh), dim=(0, 2, 3)).view(-1, 1, 1, 1)
-
-            yw_ee = yu_exc * self.w_ee
-            yw_ei = yu_inh * self.w_ei
-            yw_ie = yu_exc * self.w_ie
-
+            # Compute updates for E->E weights
+            yx_ee = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
+                             stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yu_ee = torch.sum(y_wta, dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            yw_ee = yu_ee * self.weight_ee
             update_ee = yx_ee - yw_ee
+
+            # Compute updates for E->I weights
+            yx_ei = F.conv2d(x.transpose(0, 1), y_i_wta.transpose(0, 1), padding=0,
+                             stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yu_ei = torch.sum(torch.abs(y_i_wta), dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            yw_ei = yu_ei * self.weight_ei
             update_ei = yx_ei - yw_ei
+
+            # Compute updates for I->E weights
+            yx_ie = F.conv2d(y_i_wta.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
+                             stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yu_ie = torch.sum(y_wta, dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            yw_ie = yu_ie * self.weight_ie
             update_ie = yx_ie - yw_ie
 
+            # Normalize updates
             update_ee.div_(torch.abs(update_ee).amax() + 1e-8)
             update_ei.div_(torch.abs(update_ei).amax() + 1e-8)
             update_ie.div_(torch.abs(update_ie).amax() + 1e-8)
 
+            # Store updates
             self.delta_w_ee += update_ee
             self.delta_w_ei += update_ei
             self.delta_w_ie += update_ie
 
     @torch.no_grad()
     def local_update(self):
-        # Apply updates while respecting Dale's Law
-        new_w_ee = torch.abs(self.w_ee + 0.1 * self.alpha * self.delta_w_ee)
-        new_w_ei = torch.abs(self.w_ei + 0.1 * self.alpha * self.delta_w_ei)
-        new_w_ie = -torch.abs(self.w_ie + 0.1 * self.alpha * self.delta_w_ie)
+        # Apply update while respecting Dale's Law
+        new_weight_ee = torch.abs(self.weight_ee + 0.1 * self.alpha * self.delta_w_ee)
+        new_weight_ei = torch.abs(self.weight_ei + 0.1 * self.alpha * self.delta_w_ei)
+        new_weight_ie = -torch.abs(self.weight_ie + 0.1 * self.alpha * self.delta_w_ie)
 
         # Update weights
-        self.w_ee.copy_(new_w_ee)
-        self.w_ei.copy_(new_w_ei)
-        self.w_ie.copy_(new_w_ie)
+        self.weight_ee.copy_(new_weight_ee)
+        self.weight_ei.copy_(new_weight_ei)
+        self.weight_ie.copy_(new_weight_ie)
 
         # Reset delta weights
         self.delta_w_ee.zero_()
         self.delta_w_ei.zero_()
         self.delta_w_ie.zero_()
-
-    def visualize_surround_modulation_kernel(self):
-        if hasattr(self, 'sm_kernel'):
-            sm_kernel = self.sm_kernel.squeeze().cpu().detach().numpy()
-            plt.figure(figsize=(5, 5))
-            plt.imshow(sm_kernel, cmap='jet')
-            plt.colorbar()
-            plt.title('Surround Modulation Kernel')
-            plt.show()
-        else:
-            print("Surround modulation kernel is not available for this layer.")

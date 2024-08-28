@@ -187,15 +187,12 @@ class Net_Depthwise(nn.Module):
         if tensor.shape[2] == 1 and tensor.shape[3] == 1:  # 1x1 convolution case
             out_channels, in_channels = tensor.shape[:2]
             fig = plt.figure(figsize=(14, 10))
-
             # Create a gridspec for the layout
             gs = fig.add_gridspec(2, 2, width_ratios=[20, 1], height_ratios=[1, 3],
                                   left=0.1, right=0.9, bottom=0.1, top=0.9, wspace=0.05, hspace=0.2)
-
             ax1 = fig.add_subplot(gs[0, 0])
             ax2 = fig.add_subplot(gs[1, 0])
             cbar_ax = fig.add_subplot(gs[:, 1])
-
             # Bar plot for average weights per filter
             avg_weights = tensor.mean(axis=(1, 2, 3))
             norm = plt.Normalize(vmin=avg_weights.min(), vmax=avg_weights.max())
@@ -204,13 +201,11 @@ class Net_Depthwise(nn.Module):
             ax1.set_ylabel('Average Weight')
             ax1.set_title(f'Average Weights for 1x1 Kernels in {layer_name}')
             ax1.axhline(y=0, color='black', linestyle='--', linewidth=0.5)
-
             # Heatmap for detailed weight distribution
             im2 = ax2.imshow(tensor.reshape(out_channels, in_channels), cmap='RdYlGn', aspect='auto', norm=norm)
             ax2.set_xlabel('Input Channel')
             ax2.set_ylabel('Output Channel (Filter)')
             ax2.set_title('Detailed Weight Distribution')
-
             # Add colorbar to the right of both subplots
             fig.colorbar(im2, cax=cbar_ax, label='Normalized Weight Value')
 
@@ -223,6 +218,15 @@ class Net_Depthwise(nn.Module):
                     # Handle different filter shapes
                     if filter_img.shape[0] == 3:  # RGB filter (3, H, W)
                         filter_img = np.transpose(filter_img, (1, 2, 0))
+                        if i >= 20:  # Inhibitory
+                            # Invert and scale the inhibitory weights to [0, 1] range for visualization
+                            filter_img = -filter_img
+                            filter_img = (filter_img - filter_img.min()) / (filter_img.max() - filter_img.min() + 1e-8)
+                            # Apply a blue tint to distinguish inhibitory filters
+                            filter_img = filter_img * np.array([0.5, 0.5, 1.0])
+                        else:  # Excitatory
+                            # Clip excitatory weights to [0, 1] range
+                            filter_img = np.clip(filter_img, 0, 1)
                     elif filter_img.shape[0] == 1:  # Grayscale filter (1, H, W)
                         filter_img = filter_img.squeeze()
                     else:  # Multi-channel filter (C, H, W), take mean across channels

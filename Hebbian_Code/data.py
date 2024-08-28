@@ -110,6 +110,7 @@ def check_normalization(data):
     print(f"Standard deviation: {std:.6f}")
     print(f"Min: {data_flat.min().item():.6f}")
     print(f"Max: {data_flat.max().item():.6f}")
+    print()
 
 
 def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, whiten_lvl=None):
@@ -139,18 +140,17 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
 
         # print("\nVisualization of ZCA effect:")
         # visualize_zca_effect(original_batch, whitened_batch)
-
-        print("\nCovariance check:")
-        print("Before whitening:")
-        check_covariance(original_batch)
-        print("\nAfter whitening:")
-        check_covariance(whitened_batch)
-
-        print("\nNormalization check:")
-        print("Before whitening:")
-        check_normalization(original_batch)
-        print("\nAfter whitening:")
-        check_normalization(whitened_batch)
+        # print("\nCovariance check:")
+        # print("Before whitening:")
+        # check_covariance(original_batch)
+        # print("\nAfter whitening:")
+        # check_covariance(whitened_batch)
+        #
+        # print("\nNormalization check:")
+        # print("Before whitening:")
+        # check_normalization(original_batch)
+        # print("\nAfter whitening:")
+        # check_normalization(whitened_batch)
 
         # Now apply the full transform including ZCA to the datasets
         full_transform = T.Compose([

@@ -47,9 +47,9 @@ def print_weight_statistics(layer, layer_name):
 def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
     weights = layer.weight.data
     delta_w = layer.delta_w.data
-    print(f"Layer {layer_name}")
-    print(delta_w.mean())
-    print(delta_w.max())
+    # print(f"Layer {layer_name}")
+    # print(delta_w.mean())
+    # print(delta_w.max())
 
     if not detailed_mode:
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -173,9 +173,53 @@ def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
                 axes[j].axis('off')
 
             fig.suptitle('LTP/LTD per Weight (Mean across channels)', fontsize=16)
-
         # Log the plot to wandb
         wandb.log({f"{layer_name}_LTP_LTD_per_Weight": wandb.Image(fig)})
+        plt.close(fig)
+
+        # Plot 5: Detailed statistics for each filter and overall layer statistics: delta_w
+        fig, (ax3, ax4) = plt.subplots(2, 1, figsize=(12, 12), gridspec_kw={'height_ratios': [3, 1]})
+        stats = []
+        for i in range(min(num_filters, weights.shape[0])):
+            filter_weights = delta_w[i].view(-1)  # could be delta_w
+            stats.append({
+                'Mean': filter_weights.mean().item(),
+                'Median': filter_weights.median().item(),
+                'Std Dev': filter_weights.std().item(),
+                '% Positive': (filter_weights > 0).float().mean().item() * 100,
+                '% Negative': (filter_weights < 0).float().mean().item() * 100
+            })
+        # Per-filter statistics
+        stat_df = pd.DataFrame(stats)
+        sns.heatmap(stat_df.T, annot=True, cmap='coolwarm', center=0, ax=ax3)
+        ax3.set_xlabel('Filter Index')
+        ax3.set_title('Detailed Statistics for Each Filter')
+        # Overall layer statistics
+        all_weights = delta_w.view(-1)  # This includes ALL weights in the layer
+        overall_stats = pd.DataFrame({
+            'Layer Overall': {
+                'Mean': all_weights.mean().item(),
+                'Median': all_weights.median().item(),
+                'Std Dev': all_weights.std().item(),
+                '% Positive': (all_weights > 0).float().mean().item() * 100,
+                '% Negative': (all_weights < 0).float().mean().item() * 100
+            }
+        })
+        sns.heatmap(overall_stats, annot=True, cmap='coolwarm', center=0, ax=ax4)
+        ax4.set_title('Overall Layer Statistics for Delta_w')
+        plt.tight_layout()
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Delta_w_Statistics": wandb.Image(fig)})
+        plt.close(fig)
+
+        # Plot 6: Weight distribution plots to understand connectivity of weights better
+        fig, ax6 = plt.subplots(figsize=(12, 6))
+        sns.histplot(weights.view(-1).cpu().numpy(), bins=50, kde=True, ax=ax6)
+        ax6.set_xlabel('Weight Value')
+        ax6.set_ylabel('Frequency')
+        ax6.set_title(f'Weight Distribution in {layer_name}')
+        # Log the plot to wandb
+        wandb.log({f"{layer_name}_Weight_Distribution": wandb.Image(fig)})
         plt.close(fig)
 
 
@@ -333,7 +377,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"WTA-Ex/In-Surround-Hard-HebbianCNN-Depthwise",
+        f"WTA-Abs-  Ex/In-Surround-Hard-HebbianCNN-Depthwise",
         project='HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)

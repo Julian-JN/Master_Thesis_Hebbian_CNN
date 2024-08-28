@@ -245,7 +245,7 @@ class HebbianConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
-        if self.mode == 'hard':
+        if self.mode == self.MODE_HARDWT:
             batch_size, out_channels, height_out, width_out = y.shape
 
             # Separate WTA for excitatory and inhibitory channels
@@ -270,15 +270,12 @@ class HebbianConv2d(nn.Module):
 
             # Combine excitatory and inhibitory WTA results
             y_wta = torch.cat([y_wta_exc, y_wta_inh], dim=1)
-
             # Compute yx using conv2d
             yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride).transpose(0, 1)
-
             # Compute y * w
             yu = torch.sum(y_wta, dim=(0, 2, 3)).view(-1, 1, 1, 1)
             yw = yu * weight
-
             # Compute update
             update = yx - yw
 
@@ -299,6 +296,7 @@ class HebbianConv2d(nn.Module):
             return F.normalize(m, p=2, dim=0)
         else:
             raise ValueError(f"Unknown competition type: {self.competition_type}")
+
 
     @torch.no_grad()
     def local_update(self):

@@ -137,37 +137,18 @@ class HebbianConv2d(nn.Module):
         self.excitatory_channels = int(out_channels * 0.8)
         self.inhibitory_channels = out_channels - self.excitatory_channels
 
-        # # Initialize weights similar to the purely excitatory model
-        # # TODO separate weight distribution initialisation for inhibitory and excitatory
-        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        # initial_weights = weight_range * torch.abs(
-        #     torch.randn((out_channels, in_channels // groups, *self.kernel_size)))
-        # # Make inhibitory weights negative
-        # initial_weights[self.excitatory_channels:] *= -1
-        # self.weight = nn.Parameter(initial_weights)
-
         # Define weight range based on the same distribution
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
         # Initialize excitatory weights
         excitatory_weights = weight_range * torch.abs(
-            torch.randn((self.excitatory_channels, in_channels // groups, *self.kernel_size))
-        )
+            torch.randn((self.excitatory_channels, in_channels // groups, *self.kernel_size)))
         # Initialize inhibitory weights (same distribution, but will be made negative)
-        inhibitory_weights = weight_range * torch.abs(
-            torch.randn((out_channels - self.excitatory_channels, in_channels // groups, *self.kernel_size))
-        )
-        inhibitory_weights *= -1  # Make inhibitory weights negative
+        inhibitory_weights = -weight_range * torch.abs(
+            torch.randn((out_channels - self.excitatory_channels, in_channels // groups, *self.kernel_size)))
         # Concatenate excitatory and inhibitory weights
         initial_weights = torch.cat((excitatory_weights, inhibitory_weights), dim=0)
         # Assign to the module's weight parameter
         self.weight = nn.Parameter(initial_weights)
-
-
-        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        # initial_weights = weight_range * torch.randn((out_channels, in_channels // groups, *self.kernel_size))
-        # initial_weights[:self.excitatory_channels] = torch.abs(initial_weights[:self.excitatory_channels])
-        # initial_weights[self.excitatory_channels:] = -torch.abs(initial_weights[self.excitatory_channels:])
-        # self.weight = nn.Parameter(initial_weights)
 
         # Initialize signs for excitatory and inhibitory neurons
         self.sign = nn.Parameter(torch.ones_like(self.weight), requires_grad=False)
@@ -268,20 +249,30 @@ class HebbianConv2d(nn.Module):
                                                              width_out).transpose(0, 1)
             y_wta_inh = y_inh * wta_mask_inh
 
-            # Combine excitatory and inhibitory WTA results
-            y_wta = torch.cat([y_wta_exc, y_wta_inh], dim=1)
-            # Compute yx using conv2d
-            yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
-            # Compute y * w
-            yu = torch.sum(y_wta, dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            yw = yu * weight
-            # Compute update
-            update = yx - yw
+            # Separate updates for excitatory and inhibitory neurons
+            yx_exc = F.conv2d(x.transpose(0, 1), y_wta_exc.transpose(0, 1), padding=0,
+                              stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yx_inh = F.conv2d(x.transpose(0, 1), y_wta_inh.transpose(0, 1), padding=0,
+                              stride=self.dilation, dilation=self.stride).transpose(0, 1)
 
-            # Normalization
-            update.div_(torch.abs(update).amax() + 1e-8)
-            self.delta_w += update
+            # Compute y * w separately for excitatory and inhibitory
+            yu_exc = torch.sum(y_wta_exc, dim=(0, 2, 3)).view(-1, 1, 1, 1)
+            yu_inh = torch.sum(torch.abs(y_wta_inh), dim=(0, 2, 3)).view(-1, 1, 1, 1)
+
+            yw_exc = yu_exc * weight[:self.excitatory_channels]
+            yw_inh = yu_inh * weight[self.excitatory_channels:]
+
+            # Compute updates separately
+            update_exc = yx_exc - yw_exc
+            update_inh = yx_inh - yw_inh
+
+            # Normalize updates separately
+            update_exc.div_(torch.abs(update_exc).amax() + 1e-8)
+            update_inh.div_(torch.abs(update_inh).amax() + 1e-8)
+
+            # Combine updates
+            self.delta_w[:self.excitatory_channels] += update_exc
+            self.delta_w[self.excitatory_channels:] += update_inh
 
     def generate_mask(self):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
@@ -297,14 +288,14 @@ class HebbianConv2d(nn.Module):
         else:
             raise ValueError(f"Unknown competition type: {self.competition_type}")
 
-
     @torch.no_grad()
     def local_update(self):
-        # Apply update while respecting weight signs
-        new_weight = self.weight + self.lr * self.alpha * self.delta_w * self.sign
-        # Ensure weights maintain their sign
-        new_weight *= self.sign
+        # Apply update while respecting Dale's Law
+        new_weight_exc = torch.abs(
+            self.weight[:self.excitatory_channels] + self.alpha * self.delta_w[:self.excitatory_channels])
+        new_weight_inh = -torch.abs(
+            self.weight[self.excitatory_channels:] + self.alpha * self.delta_w[self.excitatory_channels:])
         # Update weights
-        self.weight.copy_(new_weight)
+        self.weight.copy_(torch.cat([new_weight_exc, new_weight_inh], dim=0))
         # Reset delta_w
         self.delta_w.zero_()

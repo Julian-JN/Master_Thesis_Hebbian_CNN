@@ -79,29 +79,29 @@ class Net_Depthwise(nn.Module):
             self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
             self.activ1 = Triangle(power=0.7)
 
-            self.bn2 = nn.BatchNorm2d(96, affine=False)
-            self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
+            self.bn2 = nn.BatchNorm2d(76, affine=False)
+            self.conv2 = HebbianDepthConv2d(in_channels=76, out_channels=76, kernel_size=3, stride=1, **hebb_params,
                                             t_invert=0.65, padding=0)
-            self.bn_point2 = nn.BatchNorm2d(96, affine=False)
-            self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1,
+            self.bn_point2 = nn.BatchNorm2d(76, affine=False)
+            self.conv_point2 = HebbianConv2d(in_channels=76, out_channels=384, kernel_size=1, stride=1,
                                              **hebb_params,t_invert=0.65, padding=0)
             # self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
             self.activ2 = Triangle(power=1.4)
 
-            self.bn3 = nn.BatchNorm2d(384, affine=False)
-            self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1,
+            self.bn3 = nn.BatchNorm2d(307, affine=False)
+            self.conv3 = HebbianDepthConv2d(in_channels=307, out_channels=307, kernel_size=3, stride=1,
                                             **hebb_params,
                                             t_invert=0.25, padding=0)
-            self.bn_point3 = nn.BatchNorm2d(384, affine=False)
-            self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1,
+            self.bn_point3 = nn.BatchNorm2d(307, affine=False)
+            self.conv_point3 = HebbianConv2d(in_channels=307, out_channels=1536, kernel_size=1, stride=1,
                                              **hebb_params,t_invert=0.25, padding=0)
             self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
             self.activ3 = Triangle(power=1.)
 
             self.flatten = nn.Flatten()
             # Final fully-connected layer classifier
-            self.fc1 = nn.Linear(38400, 10)
-            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 38400)
+            self.fc1 = nn.Linear(30700, 10)
+            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 30700)
             self.dropout = nn.Dropout(0.5)
 
         elif version == "lagani":
@@ -166,6 +166,80 @@ class Net_Depthwise(nn.Module):
         x = self.flatten(x)
         x = self.fc1(self.dropout(x))
         return x
+
+    def plot_grid_ex_in(self, wee, wei, wie, path, num_rows=5, num_cols=5, layer_name=""):
+        def normalize(tensor):
+            max_abs = torch.max(torch.abs(tensor))
+            return tensor / (max_abs + 1e-8)
+
+        norm_wee = normalize(wee[:10])  # Take only first 10 filters
+        norm_wei = normalize(wei[:10])  # Take only first 10 filters
+        norm_wie = normalize(wie[:5])  # Take only first 5 filters
+
+        weight_types = [('WEE', norm_wee, 10), ('WEI', norm_wei, 10), ('WIE', norm_wie, 5)]
+
+        if all(w.shape[2] == 1 and w.shape[3] == 1 for _, w, _ in weight_types):  # 1x1 convolution case
+            fig, axes = plt.subplots(3, 1, figsize=(14, 30))
+            fig.suptitle(f'Filters of {layer_name} (1x1 convolutions)', fontsize=16)
+
+            for idx, (name, weights, _) in enumerate(weight_types):
+                ax = axes[idx]
+                out_channels, in_channels = weights.shape[:2]
+                im = ax.imshow(weights.squeeze().cpu().detach().numpy(), cmap='RdYlGn', aspect='auto')
+                ax.set_title(f'{name} Weights (First {out_channels} filters)')
+                ax.set_xlabel('Input Channel')
+                ax.set_ylabel('Output Channel')
+                plt.colorbar(im, ax=ax)
+
+        else:
+            fig, axes = plt.subplots(25, 3, figsize=(15, 125))  # 25 rows: 10 for WEE, 10 for WEI, 5 for WIE
+            fig.suptitle(f'Filters of {layer_name}', fontsize=16)
+
+            row = 0
+            for name, weights, num_filters in weight_types:
+                for i in range(num_filters):
+                    if i < weights.shape[0]:
+                        filter_img = weights[i].cpu().detach().numpy()
+
+                        if filter_img.shape[0] == 3:  # RGB filter
+                            filter_img = np.transpose(filter_img, (1, 2, 0))
+                        elif filter_img.shape[0] == 1:  # Grayscale filter
+                            filter_img = filter_img.squeeze()
+                        else:  # Multi-channel filter
+                            filter_img = np.mean(filter_img, axis=0)
+
+                        ax = axes[row, 0]
+                        ax.imshow(filter_img, cmap='viridis' if filter_img.ndim == 2 else None)
+                        ax.set_title(f'{name} Filter {i + 1}')
+                        ax.axis('off')
+
+                        ax = axes[row, 1]
+                        ax.hist(filter_img.ravel(), bins=50)
+                        ax.set_title(f'{name} Filter {i + 1} Distribution')
+
+                        ax = axes[row, 2]
+                        ax.imshow(np.abs(filter_img), cmap='hot')
+                        ax.set_title(f'{name} Filter {i + 1} Magnitude')
+                        ax.axis('off')
+                    else:
+                        # If there aren't enough filters, create empty plots
+                        for j in range(3):
+                            axes[row, j].axis('off')
+                    row += 1
+
+        plt.tight_layout()
+        if path:
+            fig.savefig(path, bbox_inches='tight')
+        wandb.log({f'{layer_name} filters': wandb.Image(fig)})
+        plt.close(fig)
+
+    def visualize_filters_ex_in(self, layer_name='conv1', save_path=None):
+        layer = getattr(self, layer_name)
+        # Directly access the weight attributes
+        wee = layer.weight_ee.data
+        wei = layer.weight_ei.data
+        wie = layer.weight_ie.data
+        self.plot_grid_ex_in(wee, wei, wie, save_path, layer_name=layer_name)
 
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 25 filters (or less if there are fewer)

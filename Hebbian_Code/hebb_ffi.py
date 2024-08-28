@@ -135,7 +135,7 @@ class HebbianConv2d(nn.Module):
             torch.randn((self.inhibitory_channels, in_channels // groups, *self.kernel_size))))
 
         # Inhibitory to excitatory weights (I->E)
-        self.weight_ie = nn.Parameter(-weight_range * torch.abs(
+        self.weight_ie = nn.Parameter(weight_range * torch.abs(
             torch.randn((self.excitatory_channels, self.inhibitory_channels, *self.kernel_size))))
 
         # Initialize delta weights for updates

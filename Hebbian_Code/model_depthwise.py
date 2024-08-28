@@ -5,7 +5,8 @@ from sklearn.decomposition import PCA
 
 # from hebb import HebbianConv2d
 # from hebb_abs import HebbianConv2d
-from hebb_ex_in import HebbianConv2d
+# from hebb_ex_in import HebbianConv2d
+from hebb_ffi import HebbianConv2d
 from hebb_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
@@ -223,7 +224,7 @@ class Net_Depthwise(nn.Module):
                             filter_img = -filter_img
                             filter_img = (filter_img - filter_img.min()) / (filter_img.max() - filter_img.min() + 1e-8)
                             # Apply a blue tint to distinguish inhibitory filters
-                            filter_img = filter_img * np.array([0.5, 0.5, 1.0])
+                            # filter_img = filter_img * np.array([0.5, 0.5, 1.0])
                         else:  # Excitatory
                             # Clip excitatory weights to [0, 1] range
                             filter_img = np.clip(filter_img, 0, 1)

@@ -150,16 +150,15 @@ class HebbianConv2d(nn.Module):
         # Assign to the module's weight parameter
         self.weight = nn.Parameter(initial_weights)
 
-        # Initialize signs for excitatory and inhibitory neurons
-        self.sign = nn.Parameter(torch.ones_like(self.weight), requires_grad=False)
-        self.sign[self.excitatory_channels:] = -1
-
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
 
         if self.kernel != 1:
             self.sm_kernel = create_sm_kernel()
             self.register_buffer('surround_kernel', self.sm_kernel)
             self.visualize_surround_modulation_kernel()
+
+        # Initialize feedforward inhibition strength
+        self.ff_inhibition_strength = nn.Parameter(torch.ones(self.inhibitory_channels, 1, 1, 1) * 0.1)
 
     def visualize_surround_modulation_kernel(self):
         """
@@ -181,12 +180,10 @@ class HebbianConv2d(nn.Module):
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
-        w = self.weight * self.sign
+        w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y = self.act(self.apply_weights(x, w))
-        # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.act(x)
         return y, w
 
     def forward(self, x):
@@ -292,9 +289,9 @@ class HebbianConv2d(nn.Module):
     def local_update(self):
         # Apply update while respecting Dale's Law
         new_weight_exc = torch.abs(
-            self.weight[:self.excitatory_channels] + self.alpha * self.delta_w[:self.excitatory_channels])
+            self.weight[:self.excitatory_channels] + 0.1*self.alpha * self.delta_w[:self.excitatory_channels])
         new_weight_inh = -torch.abs(
-            self.weight[self.excitatory_channels:] + self.alpha * self.delta_w[self.excitatory_channels:])
+            self.weight[self.excitatory_channels:] + 0.1*self.alpha * self.delta_w[self.excitatory_channels:])
         # Update weights
         self.weight.copy_(torch.cat([new_weight_exc, new_weight_inh], dim=0))
         # Reset delta_w

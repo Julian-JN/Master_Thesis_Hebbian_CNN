@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 # from hebb import HebbianConv2d
 # from hebb_abs import HebbianConv2d
 # from hebb_ex_in import HebbianConv2d
-from hebb_ffi import HebbianConv2d
+# from hebb_ffi import HebbianConv2d
 from hebb_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
@@ -18,6 +18,7 @@ from itertools import islice
 import umap
 import wandb
 import seaborn as sns
+import networkx as nx
 
 torch.manual_seed(0)
 default_hebb_params = {'mode': HebbianConv2d.MODE_SOFTWTA, 'w_nrm': True, 'k': 50, 'act': nn.Identity(), 'alpha': 1.}
@@ -178,21 +179,68 @@ class Net_Depthwise(nn.Module):
         weight_types = [('WEE', norm_wee, 10), ('WEI', norm_wei, 10), ('WIE', norm_wie, norm_wie.shape[0])]
 
         if all(w.shape[2] == 1 and w.shape[3] == 1 for _, w, _ in weight_types):  # All 1x1 convolution case
-            fig, axes = plt.subplots(3, 1, figsize=(14, 30))
+            fig, axes = plt.subplots(3, 3, figsize=(20, 20))
             fig.suptitle(f'Filters of {layer_name} (1x1 convolutions)', fontsize=16)
 
             for idx, (name, weights, _) in enumerate(weight_types):
-                ax = axes[idx]
-                out_channels, in_channels = weights.shape[:2]
-                im = ax.imshow(weights.squeeze().cpu().detach().numpy(), cmap='YlOrRd', aspect='auto')
-                ax.set_title(f'{name} Weights (First {out_channels} filters)')
-                if name == 'WIE':
-                    ax.set_xlabel('Inhibitory Channel')
-                    ax.set_ylabel('Excitatory Channel')
-                else:
-                    ax.set_xlabel('Input Channel')
-                    ax.set_ylabel('Output Channel')
+                weight_matrix = weights.squeeze().cpu().detach().numpy()
+
+                # Heatmap (unchanged)
+                ax = axes[idx, 0]
+                im = ax.imshow(weight_matrix, cmap='coolwarm', aspect='auto')
+                ax.set_title(f'{name} Weights Heatmap')
+                ax.set_xlabel('Input Channel' if name != 'WIE' else 'Inhibitory Channel')
+                ax.set_ylabel('Output Channel' if name != 'WIE' else 'Excitatory Channel')
                 plt.colorbar(im, ax=ax)
+
+                # Distribution plot (unchanged)
+                ax = axes[idx, 1]
+                sns.histplot(weight_matrix.flatten(), kde=True, ax=ax)
+                ax.set_title(f'{name} Weights Distribution')
+                ax.set_xlabel('Weight Value')
+                ax.set_ylabel('Frequency')
+
+                # # New 1x1 Convolution Structure Visualization
+                # ax = axes[idx, 2]
+                # num_out, num_in = weight_matrix.shape
+                #
+                # # Create a bipartite graph layout
+                # pos = {}
+                # for i in range(num_in):
+                #     pos[f'in_{i}'] = (0, i)
+                # for i in range(num_out):
+                #     pos[f'out_{i}'] = (1, i)
+                #
+                # # Draw nodes
+                # for node, (x, y) in pos.items():
+                #     color = 'lightblue' if 'in_' in node else 'lightgreen'
+                #     ax.scatter(x, y, c=color, s=100)
+                #     ax.annotate(node, (x, y), xytext=(5 if 'in_' in node else -5, 0),
+                #                 textcoords='offset points', ha='left' if 'in_' in node else 'right', va='center')
+                #
+                # # Draw edges
+                # max_weight = np.max(np.abs(weight_matrix))
+                # for i in range(num_out):
+                #     for j in range(num_in):
+                #         weight = weight_matrix[i, j]
+                #         if abs(weight) > 0.1 * max_weight:  # Only draw significant connections
+                #             ax.plot([0, 1], [j, i], color='red' if weight > 0 else 'blue',
+                #                     alpha=min(1, abs(weight) / max_weight), linewidth=1.5)
+                #
+                # ax.set_title(f'{name} 1x1 Conv Structure')
+                # ax.set_xlim(-0.1, 1.1)
+                # ax.set_ylim(min(num_in, num_out) - 0.5, -0.5)
+                # ax.axis('off')
+                #
+                # # Add text explanation
+                # text = (
+                #     f"This plot shows the structure of a 1x1 conv with {num_in} input and {num_out} output channels.\n"
+                #     "Blue nodes: Input channels\n"
+                #     "Green nodes: Output channels\n"
+                #     "Red lines: Positive weights\n"
+                #     "Blue lines: Negative weights\n"
+                #     "Line opacity indicates weight strength (darker = stronger).")
+                # ax.text(0.5, -0.1, text, transform=ax.transAxes, ha='center', va='center', fontsize=8, wrap=True)
 
         else:
             total_rows = sum(num for _, _, num in weight_types)

@@ -164,12 +164,12 @@ if __name__ == "__main__":
             # Visualize changes before updating
             if i % 200 == 0: # Every 100 datapoint
                 print(f'Saving details after batch {i}')
-                plot_ltp_ltd_ex_in(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
                 plot_ltp_ltd(model.conv2, 'conv2', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd_ex_in(model.conv_point2, 'conv_point2', num_filters=10, detailed_mode=True)
-                model.visualize_filters_ex_in('conv1')
+                plot_ltp_ltd(model.conv_point2, 'conv_point2', num_filters=10, detailed_mode=True)
+                model.visualize_filters('conv1')
                 model.visualize_filters('conv2')
-                model.visualize_filters_ex_in('conv_point2')
+                model.visualize_filters('conv_point2')
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
@@ -182,10 +182,10 @@ if __name__ == "__main__":
             # optimize
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
-    model.visualize_filters_ex_in('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
-    model.visualize_filters_ex_in('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
+    model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
 
 
     # print("Weight statistics")

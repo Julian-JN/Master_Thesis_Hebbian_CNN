@@ -174,25 +174,29 @@ class Net_Depthwise(nn.Module):
 
         norm_wee = normalize(wee[:10])  # Take only first 10 filters
         norm_wei = normalize(wei[:10])  # Take only first 10 filters
-        norm_wie = normalize(wie[:5])  # Take only first 5 filters
+        norm_wie = normalize(wie[-5:])  # Use all filters for WIE
+        weight_types = [('WEE', norm_wee, 10), ('WEI', norm_wei, 10), ('WIE', norm_wie, norm_wie.shape[0])]
 
-        weight_types = [('WEE', norm_wee, 10), ('WEI', norm_wei, 10), ('WIE', norm_wie, 5)]
-
-        if all(w.shape[2] == 1 and w.shape[3] == 1 for _, w, _ in weight_types):  # 1x1 convolution case
+        if all(w.shape[2] == 1 and w.shape[3] == 1 for _, w, _ in weight_types):  # All 1x1 convolution case
             fig, axes = plt.subplots(3, 1, figsize=(14, 30))
             fig.suptitle(f'Filters of {layer_name} (1x1 convolutions)', fontsize=16)
 
             for idx, (name, weights, _) in enumerate(weight_types):
                 ax = axes[idx]
                 out_channels, in_channels = weights.shape[:2]
-                im = ax.imshow(weights.squeeze().cpu().detach().numpy(), cmap='RdYlGn', aspect='auto')
+                im = ax.imshow(weights.squeeze().cpu().detach().numpy(), cmap='YlOrRd', aspect='auto')
                 ax.set_title(f'{name} Weights (First {out_channels} filters)')
-                ax.set_xlabel('Input Channel')
-                ax.set_ylabel('Output Channel')
+                if name == 'WIE':
+                    ax.set_xlabel('Inhibitory Channel')
+                    ax.set_ylabel('Excitatory Channel')
+                else:
+                    ax.set_xlabel('Input Channel')
+                    ax.set_ylabel('Output Channel')
                 plt.colorbar(im, ax=ax)
 
         else:
-            fig, axes = plt.subplots(25, 3, figsize=(15, 125))  # 25 rows: 10 for WEE, 10 for WEI, 5 for WIE
+            total_rows = sum(num for _, _, num in weight_types)
+            fig, axes = plt.subplots(total_rows, 3, figsize=(15, 5 * total_rows))
             fig.suptitle(f'Filters of {layer_name}', fontsize=16)
 
             row = 0
@@ -200,27 +204,50 @@ class Net_Depthwise(nn.Module):
                 for i in range(num_filters):
                     if i < weights.shape[0]:
                         filter_img = weights[i].cpu().detach().numpy()
-
-                        if filter_img.shape[0] == 3:  # RGB filter
-                            filter_img = np.transpose(filter_img, (1, 2, 0))
-                        elif filter_img.shape[0] == 1:  # Grayscale filter
+                        if name == 'WIE' and filter_img.shape[1] == 1 and filter_img.shape[2] == 1:
+                            # Special case for 1x1 convolution in WIE
                             filter_img = filter_img.squeeze()
-                        else:  # Multi-channel filter
-                            filter_img = np.mean(filter_img, axis=0)
 
-                        ax = axes[row, 0]
-                        ax.imshow(filter_img, cmap='viridis' if filter_img.ndim == 2 else None)
-                        ax.set_title(f'{name} Filter {i + 1}')
-                        ax.axis('off')
+                            ax = axes[row, 0]
+                            im = ax.imshow(filter_img.reshape(1, -1), cmap='YlOrRd', aspect='auto')
+                            ax.set_title(f'{name} Filter {i + 1} Weights')
+                            ax.set_xlabel('Inhibitory Channel')
+                            ax.set_ylabel('Excitatory Channel')
+                            plt.colorbar(im, ax=ax)
 
-                        ax = axes[row, 1]
-                        ax.hist(filter_img.ravel(), bins=50)
-                        ax.set_title(f'{name} Filter {i + 1} Distribution')
+                            ax = axes[row, 1]
+                            ax.hist(filter_img.ravel(), bins=20, color='skyblue', edgecolor='black')
+                            ax.set_title(f'{name} Filter {i + 1} Distribution')
+                            ax.set_xlabel('Weight Value')
+                            ax.set_ylabel('Frequency')
 
-                        ax = axes[row, 2]
-                        ax.imshow(np.abs(filter_img), cmap='hot')
-                        ax.set_title(f'{name} Filter {i + 1} Magnitude')
-                        ax.axis('off')
+                            ax = axes[row, 2]
+                            ax.bar(range(len(filter_img)), filter_img, color='orange')
+                            ax.set_title(f'{name} Filter {i + 1} Weights')
+                            ax.set_xlabel('Inhibitory Channel')
+                            ax.set_ylabel('Weight Value')
+
+                        else:
+                            if filter_img.shape[0] == 3:  # RGB filter
+                                filter_img = np.transpose(filter_img, (1, 2, 0))
+                            elif filter_img.shape[0] == 1:  # Grayscale filter
+                                filter_img = filter_img.squeeze()
+                            else:  # Multi-channel filter
+                                filter_img = np.mean(filter_img, axis=0)
+
+                            ax = axes[row, 0]
+                            ax.imshow(filter_img, cmap='viridis' if filter_img.ndim == 2 else None)
+                            ax.set_title(f'{name} Filter {i + 1}')
+                            ax.axis('off')
+
+                            ax = axes[row, 1]
+                            ax.hist(filter_img.ravel(), bins=50)
+                            ax.set_title(f'{name} Filter {i + 1} Distribution')
+
+                            ax = axes[row, 2]
+                            ax.imshow(np.abs(filter_img), cmap='hot')
+                            ax.set_title(f'{name} Filter {i + 1} Magnitude')
+                            ax.axis('off')
                     else:
                         # If there aren't enough filters, create empty plots
                         for j in range(3):

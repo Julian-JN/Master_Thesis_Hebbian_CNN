@@ -177,7 +177,6 @@ class HebbianDepthConv2d(nn.Module):
         # self.weight = center_surround_init(in_channels, 1, kernel_size, 1)
         # print(self.weight.shape)
 
-
         self.w_nrm = w_nrm
         self.act = act
         # self.act = self.cos_sim2d
@@ -272,8 +271,8 @@ class HebbianDepthConv2d(nn.Module):
             yx = F.conv2d(x.transpose(0, 1), y_depthwise.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
             yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            if self.groups != 1:
-                yx = yx.mean(dim=1, keepdim=True)
+            # if self.groups != 1:
+            #     yx = yx.mean(dim=1, keepdim=True)
             # Reshape yx to match the weight shape
             yx = yx.view(weight.shape)
             # Apply competition to yx
@@ -296,141 +295,86 @@ class HebbianDepthConv2d(nn.Module):
                 self.activation_history = torch.cat([self.activation_history, y_depthwise.detach()], dim=0)
                 if self.activation_history.size(0) > self.temporal_window:
                     self.activation_history = self.activation_history[-self.temporal_window:]
-            # Reshape activation history to group by spatial location
-            history_spatial = self.activation_history.view(-1, self.out_channels, height_out, width_out)
-            # Compute median activations for each spatial location
+            # Reshape activation history to group by channel and spatial location
+            history_spatial = self.activation_history.view(-1, out_channels, height_out, width_out)
+            # Compute median activations for each channel and spatial location
             median_activations = torch.median(history_spatial, dim=0)[0]
-            # Compute threshold for each spatial location
-            temporal_threshold = torch.mean(median_activations, dim=0, keepdim=True)
-            # Determine winners at each spatial location
+            # Compute threshold for each channel and spatial location
+            temporal_threshold = torch.mean(median_activations, dim=(1, 2), keepdim=True)
+            # Determine winners at each channel and spatial location
             temporal_winners = (median_activations > temporal_threshold).float()
             y_winners = temporal_winners * y_depthwise
             if self.competition_type == 'hard':
                 y_winners = y_winners.view(batch_size, out_channels, -1)
-                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=2, largest=True, sorted=False).indices
                 y_compete = torch.zeros_like(y_winners)
-                y_compete.scatter_(1, top_k_indices, y_winners.gather(1, top_k_indices))
+                y_compete.scatter_(2, top_k_indices, y_winners.gather(2, top_k_indices))
                 y_winners = y_compete.view_as(y_depthwise)
             elif self.competition_type == 'soft':
-                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=1).view_as(
+                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=2).view_as(
                     y_depthwise)
             elif self.competition_type == 'anti':
                 y_winners = y_winners.view(batch_size, out_channels, -1)
-                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=2, largest=True, sorted=False).indices
                 anti_hebbian_mask = torch.ones_like(y_winners)
-                anti_hebbian_mask.scatter_(1, top_k_indices, -1)
+                anti_hebbian_mask.scatter_(2, top_k_indices, -1)
                 y_winners = (y_winners * anti_hebbian_mask).view_as(y_depthwise)
-            # Shape: [batch_size, out_channels, height_out, width_out]
-            # Compute update using conv2d and conv_transpose2d
+            # Compute update
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
-            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            if self.groups != 1:
-                yx = yx.mean(dim=1, keepdim=True)
-            # Reshape yx to match the weight shape
-            yx = yx.view(weight.shape)
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
-            y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            # Shape: [out_channels, 1, 1, 1]
+            yx = yx.diagonal(dim1=0, dim2=1).permute(2, 0, 1).unsqueeze(1)
+            y_sum = y_winners.sum(dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
             update = yx - y_sum * weight
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             # Normalize update
             update = update / (torch.norm(update.view(out_channels, -1), dim=1).view(-1, 1, 1, 1) + 1e-10)
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             self.delta_w += update
 
         if self.mode == self.MODE_ADAPTIVE_THRESHOLD:
             batch_size, out_channels, height_out, width_out = y_depthwise.shape
-            # Compute similarities using conv2d for efficiency
-            similarities = F.conv2d(x, weight, stride=self.stride, padding=self.padding)
-            # Shape: [batch_size, out_channels, height_out, width_out]
+            # Compute similarities using depthwise conv2d for efficiency
+            similarities = F.conv2d(x, weight, stride=self.stride, padding=self.padding, groups=self.groups)
+            # Normalize similarities within each channel
             similarities = similarities / (torch.norm(weight.view(out_channels, -1), dim=1).view(1, -1, 1, 1) + 1e-10)
-            # Shape: [batch_size, out_channels, height_out, width_out]
-            # Compute mean and std dev for each spatial location
-            mean_sim = similarities.mean(dim=1, keepdim=True)
-            std_sim = similarities.std(dim=1, keepdim=True)
-            # Compute threshold for each spatial location
+            # Compute mean and std dev for each channel
+            mean_sim = similarities.mean(dim=(2, 3), keepdim=True)
+            std_sim = similarities.std(dim=(2, 3), keepdim=True)
+            # Compute threshold for each channel
             threshold = mean_sim + self.competition_k * std_sim
-            # Determine winners at each spatial location
+            # Determine winners at each channel and spatial location
             winners = (similarities > threshold).float()
-            y_winners = winners * similarities # instead if similarity
-            # Shape: [batch_size, out_channels, height_out, width_out]
+            y_winners = winners * similarities
             if self.competition_type == 'hard':
                 y_winners = y_winners.view(batch_size, out_channels, -1)
-                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=2, largest=True, sorted=False).indices
                 y_compete = torch.zeros_like(y_winners)
-                y_compete.scatter_(1, top_k_indices, y_winners.gather(1, top_k_indices))
+                y_compete.scatter_(2, top_k_indices, y_winners.gather(2, top_k_indices))
                 y_winners = y_compete.view_as(y_depthwise)
             elif self.competition_type == 'soft':
-                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=1).view_as(
+                y_winners = torch.softmax(self.t_invert * y_winners.view(batch_size, out_channels, -1), dim=2).view_as(
                     y_depthwise)
             elif self.competition_type == 'anti':
                 y_winners = y_winners.view(batch_size, out_channels, -1)
-                top_k_indices = torch.topk(y_winners, self.top_k, dim=1, largest=True, sorted=False).indices
+                top_k_indices = torch.topk(y_winners, self.top_k, dim=2, largest=True, sorted=False).indices
                 anti_hebbian_mask = torch.ones_like(y_winners)
-                anti_hebbian_mask.scatter_(1, top_k_indices, -1)
+                anti_hebbian_mask.scatter_(2, top_k_indices, -1)
                 y_winners = (y_winners * anti_hebbian_mask).view_as(y_depthwise)
-            # Compute update using conv2d
+            # Compute update
             yx = F.conv2d(x.transpose(0, 1), y_winners.transpose(0, 1), padding=0,
                           stride=self.dilation, dilation=self.stride)
-            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            if self.groups != 1:
-                yx = yx.mean(dim=1, keepdim=True)
-            # Reshape yx to match the weight shape
-            yx = yx.view(weight.shape)
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
-            y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            # Shape: [out_channels, 1, 1, 1]
+            yx = yx.diagonal(dim1=0, dim2=1).permute(2, 0, 1).unsqueeze(1)
+            y_sum = y_winners.sum(dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
             update = yx - y_sum * weight
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             # Normalize update
             update = update / (torch.norm(update.view(out_channels, -1), dim=1).view(-1, 1, 1, 1) + 1e-10)
-            # Shape: [out_channels, in_channels, kernel_height, kernel_width]
             self.delta_w += update
 
         if self.mode == self.MODE_BCM:
-            # batch_size, out_channels, height_out, width_out = y.shape
-            # # Compute soft WTA using softmax (identical to SOFTWTA mode)
-            # flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
-            # flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
-            # flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
-            #
-            # # Find winning neurons
-            # win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
-            # competing_idx = torch.arange(flat_weighted_inputs.size(1))
-            #
-            # # Turn winner neurons' activations back to hebbian
-            # flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
-            #
-            # # Reshape softwta activations
-            # y_soft = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
-            # # Update theta (sliding threshold) using WTA output
-            # y_squared = y_soft.pow(2).mean(dim=(0, 2, 3))
-            # self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
-            # # Compute BCM update with WTA
-            # y_minus_theta = y_soft - self.theta.view(1, -1, 1, 1)
-            # bcm_factor = y_soft * y_minus_theta
-            # # Compute update using conv2d for consistency with original code
-            # yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
-            #               stride=self.dilation, dilation=self.stride).transpose(0, 1)
-            # yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            # if self.groups != 1:
-            #     yx = yx.mean(dim=1, keepdim=True)
-            # # Reshape yx to match the weight shape
-            # yx = yx.view(weight.shape)
-            # # Compute update
-            # update = yx.view(weight.shape)
-            # # Normalize update (optional, keeping it for consistency with original code)
-            # update.div_(torch.abs(update).amax() + 1e-30)
-            # self.delta_w += update
-
-            # # BCM using WT Competition
             batch_size, out_channels, height_out, width_out = y_depthwise.shape
-            # WTA competition
-            y_flat = y_depthwise.transpose(0, 1).reshape(out_channels, -1)
-            win_neurons = torch.argmax(y_flat, dim=0)
-            wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
-            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # WTA competition within each channel
+            y_flat = y_depthwise.view(batch_size, out_channels, -1)
+            win_neurons = torch.argmax(y_flat, dim=2)
+            wta_mask = F.one_hot(win_neurons, num_classes=height_out * width_out).float()
+            wta_mask = wta_mask.view(batch_size, out_channels, height_out, width_out)
             y_wta = y_depthwise * wta_mask
             # Update theta (sliding threshold) using WTA output
             y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
@@ -438,14 +382,13 @@ class HebbianDepthConv2d(nn.Module):
             # Compute BCM update with WTA
             y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
             bcm_factor = y_wta * y_minus_theta
-            # Compute update using conv2d for consistency with original code
+            # Compute update using depthwise conv2d
             yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
-            if self.groups != 1:
-                yx = yx.mean(dim=1, keepdim=True)
+                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            yx = yx.diagonal(dim1=0, dim2=1).permute(2, 0, 1).unsqueeze(1)
             # Compute update
             update = yx.view(weight.shape)
-            # Normalize update (optional, keeping it for consistency with original code)
+            # Normalize update
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
@@ -479,6 +422,26 @@ class HebbianDepthConv2d(nn.Module):
             update_depthwise.div_(torch.abs(update_depthwise).amax() + 1e-30)
             self.delta_w += update_depthwise
 
+        if self.mode == self.MODE_HARDWT:
+            # Competition for y_depthwise
+            batch_size, in_channels, height_depthwise, width_depthwise = y_depthwise.shape
+            y_depthwise_flat = y_depthwise.view(batch_size, in_channels, -1)
+            win_neurons_depthwise = torch.argmax(y_depthwise_flat, dim=2)
+            wta_mask_depthwise = F.one_hot(win_neurons_depthwise,
+                                           num_classes=height_depthwise * width_depthwise).float()
+            wta_mask_depthwise = wta_mask_depthwise.view(batch_size, in_channels, height_depthwise, width_depthwise)
+            y_depthwise_wta = y_depthwise * wta_mask_depthwise
+
+            # Update for depthwise convolution
+            yx_depthwise = F.conv2d(x.transpose(0, 1), y_depthwise_wta.transpose(0, 1), padding=0,
+                                    stride=self.dilation, dilation=self.stride)
+            yx_depthwise = yx_depthwise.diagonal(dim1=0, dim2=1).permute(2, 0, 1).unsqueeze(1)
+            y_depthwise_sum = y_depthwise_wta.sum(dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
+            yw_depthwise = y_depthwise_sum * weight
+            update_depthwise = yx_depthwise - yw_depthwise
+            update_depthwise.div_(torch.abs(update_depthwise).amax() + 1e-30)
+            self.delta_w += update_depthwise
+
         if self.mode == self.MODE_ANTIHARDWT:
             batch_size, out_channels, height_out, width_out = y_depthwise.shape
             # Reshape y for easier processing
@@ -507,26 +470,6 @@ class HebbianDepthConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
-        if self.mode == self.MODE_HARDWT:
-            # Competition for y_depthwise
-            batch_size, in_channels, height_depthwise, width_depthwise = y_depthwise.shape
-            y_depthwise_flat = y_depthwise.view(batch_size, in_channels, -1)
-            win_neurons_depthwise = torch.argmax(y_depthwise_flat, dim=2)
-            wta_mask_depthwise = F.one_hot(win_neurons_depthwise,
-                                           num_classes=height_depthwise * width_depthwise).float()
-            wta_mask_depthwise = wta_mask_depthwise.view(batch_size, in_channels, height_depthwise, width_depthwise)
-            y_depthwise_wta = y_depthwise * wta_mask_depthwise
-            # y_depthwise_wta = y_depthwise
-
-            # Update for depthwise convolution
-            yx_depthwise = F.conv2d(x.transpose(0, 1), y_depthwise_wta.transpose(0, 1), padding=0,
-                                    stride=self.dilation, dilation=self.stride)
-            yx_depthwise = yx_depthwise.diagonal(dim1=0, dim2=1).permute(2, 0, 1).unsqueeze(1)
-            y_depthwise_sum = y_depthwise_wta.sum(dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
-            yw_depthwise = y_depthwise_sum * weight
-            update_depthwise = yx_depthwise - yw_depthwise
-            update_depthwise.div_(torch.abs(update_depthwise).amax() + 1e-30)
-            self.delta_w += update_depthwise
 
     def generate_mask(self):
         return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))

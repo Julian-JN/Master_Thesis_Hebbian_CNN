@@ -308,7 +308,7 @@ class HebbianConv2d(nn.Module):
         y = self.act(self.apply_weights(x, w))
         # Channel expansion with 1x1 conv
         # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.cosine(x,w)
+        y = self.cosine(x,w)
         return y, w
 
     def forward(self, x):
@@ -461,8 +461,6 @@ class HebbianConv2d(nn.Module):
 
     @torch.no_grad()
     def local_update(self):
-        """
-		"""
         new_weight = self.weight + 0.1 * self.alpha * self.delta_w
         # Ensure weights maintain their sign
         # Update weights

@@ -111,7 +111,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"ABS-BCM-Hard-Surround-Hard-HebbianCNN-Depthwise",
+        f"ABS-CosV2-BCM-Hard-Surround-Hard-HebbianCNN-Depthwise",
         project='Clean-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -173,7 +173,6 @@ if __name__ == "__main__":
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-
             unsup_optimizer.step()
             # # Ensure weights are positive after the update
             # for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:

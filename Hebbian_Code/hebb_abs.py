@@ -106,7 +106,7 @@ class HebbianConv2d(nn.Module):
                  w_nrm=False, bias=False, act=nn.Identity(),
                  mode=MODE_SOFTWTA, k=1, patchwise=True,
                  contrast=1., uniformity=False, alpha=1., wta_competition='similarity_spatial',
-                 lateral_competition="filter",
+                 lateral_competition="combined",
                  lateral_inhibition_strength=0.01, top_k=1, prune_rate=0, t_invert=1.):
         """
 
@@ -184,6 +184,15 @@ class HebbianConv2d(nn.Module):
             self.register_buffer('surround_kernel', self.sm_kernel)
             self.visualize_surround_modulation_kernel()
 
+        self.target_activity = 0.1
+        self.scaling_rate = 0.001
+        self.register_buffer('average_activity', torch.zeros(out_channels))
+
+        self.growth_probability = 0.1
+        self.new_synapse_strength = 1
+        self.prune_threshold_percentile = 10  # Prune bottom 10% of weights
+
+
     def visualize_surround_modulation_kernel(self):
         """
         Visualizes the surround modulation kernel using matplotlib.
@@ -208,6 +217,90 @@ class HebbianConv2d(nn.Module):
         x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
+    def update_average_activity(self, y):
+        current_activity = y.mean(dim=(0, 2, 3))
+        self.average_activity = 0.9 * self.average_activity + 0.1 * current_activity
+
+    def synaptic_scaling(self):
+        scale_factor = self.target_activity / (self.average_activity + 1e-6)
+        self.weight.data *= (1 + self.scaling_rate * (scale_factor - 1)).view(-1, 1, 1, 1)
+
+    def structural_plasticity(self):
+        with torch.no_grad():
+            # Pruning step
+            prune_threshold = torch.quantile(torch.abs(self.weight), self.prune_threshold_percentile / 100)
+            weak_synapses = torch.abs(self.weight) < prune_threshold
+            self.weight.data[weak_synapses] = 0
+            # Growth step
+            zero_weights = self.weight.data == 0
+            new_synapses = torch.rand_like(self.weight) < self.growth_probability
+            new_synapses &= zero_weights
+            self.weight.data[new_synapses] = torch.randn_like(self.weight)[new_synapses] * self.new_synapse_strength
+
+    def cosine(self, x, w):
+        w_normalized = F.normalize(w, p=2, dim=1)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, self.padding, self.dilation, self.groups)
+        x_squared = x.pow(2)
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+                                 self.groups)
+        x_norm = torch.sqrt(x_squared_sum + 1e-8)
+        cosine_sim = conv_output / x_norm
+        return cosine_sim
+
+    def lateral_inhibition_within_filter(self, y_normalized):
+        # y_normalized shape is [batch_size, out_channels, height, width]
+        batch_size, out_channels, height, width = y_normalized.shape
+        hw = height * width
+        y_reshaped = y_normalized.view(batch_size, out_channels, hw).transpose(1,
+                                                                               2)  # Shape: [batch_size, hw, out_channels]
+
+        # Compute coactivation within each filter
+        coactivation = torch.bmm(y_reshaped.transpose(1, 2),
+                                 y_reshaped)  # Shape: [batch_size, out_channels, out_channels]
+
+        # Update lateral weights using Anti-Hebbian learning
+        if not hasattr(self, 'lateral_weights_filter'):
+            self.lateral_weights_filter = torch.zeros(out_channels, out_channels, device=y_normalized.device)
+        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_filter)
+        self.lateral_weights_filter -= lateral_update  # Anti-Hebbian update
+
+        # Apply inhibition
+        inhibition = torch.bmm(y_reshaped, self.lateral_weights_filter.unsqueeze(0).expand(batch_size, -1, -1))
+        y_inhibited = F.relu(y_reshaped - inhibition)
+
+        return y_inhibited.transpose(1, 2).view(batch_size, out_channels, height, width)
+
+    def lateral_inhibition_same_patch(self, y_normalized):
+        # y_normalized shape is [batch_size, out_channels, height, width]
+        batch_size, out_channels, height, width = y_normalized.shape
+        hw = height * width
+        y_reshaped = y_normalized.view(batch_size, out_channels, hw)  # Shape: [batch_size, out_channels, hw]
+
+        # Compute coactivation for neurons looking at the same patch
+        coactivation = torch.bmm(y_reshaped,
+                                 y_reshaped.transpose(1, 2))  # Shape: [batch_size, out_channels, out_channels]
+
+        # Update lateral weights using Anti-Hebbian learning
+        if not hasattr(self, 'lateral_weights_patch'):
+            self.lateral_weights_patch = torch.zeros(out_channels, out_channels, device=y_normalized.device)
+        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_patch)
+        self.lateral_weights_patch -= lateral_update  # Anti-Hebbian update
+
+        # Apply inhibition
+        inhibition = torch.bmm(self.lateral_weights_patch.unsqueeze(0).expand(batch_size, -1, -1), y_reshaped)
+        y_inhibited = F.relu(y_reshaped - inhibition)
+
+        return y_inhibited.view(batch_size, out_channels, height, width)
+
+    def combined_lateral_inhibition(self, y_normalized):
+        # Apply inhibition within filter
+        y_inhibited_filter = self.lateral_inhibition_within_filter(y_normalized)
+        # Apply inhibition for the same patch
+        y_inhibited_patch = self.lateral_inhibition_same_patch(y_normalized)
+        # Combine the inhibitions (you can adjust the weighting as needed)
+        y_inhibited = 0.5 * y_inhibited_filter + 0.5 * y_inhibited_patch
+        return y_inhibited
+
     def compute_activation(self, x):
         w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
@@ -215,15 +308,24 @@ class HebbianConv2d(nn.Module):
         y = self.act(self.apply_weights(x, w))
         # Channel expansion with 1x1 conv
         # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.act(x)
+        # y = self.cosine(x,w)
         return y, w
 
     def forward(self, x):
         y, w = self.compute_activation(x)
+        # Apply lateral inhibition
+        # if self.lateral_inhibition_mode == "filter":
+        #     y = self.lateral_inhibition_within_filter(y)
+        # elif self.lateral_inhibition_mode == "patch":
+        #     y = self.lateral_inhibition_same_patch(y)
+        # elif self.lateral_inhibition_mode == "combined":
+        #     y = self.combined_lateral_inhibition(y)
         if self.kernel !=1:
             y = F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
                      padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
         if self.training:
+            # self.update_average_activity(y)
+            # self.synaptic_scaling()
             self.compute_update(x, y, w)
         return y
 
@@ -277,23 +379,95 @@ class HebbianConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
+        if self.mode == self.MODE_SOFTWTA:
+            batch_size, out_channels, height_out, width_out = y.shape
+            # Compute soft WTA using softmax
+            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+
+            flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
+            flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
+            # Find winning neurons
+            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
+            competing_idx = torch.arange(flat_weighted_inputs.size(1))
+            # Turn winner neurons' activations back to hebbian
+            flat_softwta_activs[win_neurons, competing_idx] = -flat_softwta_activs[win_neurons, competing_idx]
+            # Reshape softwta activations
+            softwta_activs = flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # Compute yx using conv2d
+            yx = F.conv2d(x.transpose(0, 1), softwta_activs.transpose(0, 1), padding=0, stride=self.dilation,
+                          dilation=self.stride).transpose(0, 1)  # Compute yu
+            yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
+            # Compute update
+            update = yx - yu.view(-1, 1, 1, 1) * weight
+            # Normalization
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
+
+        if self.mode == self.MODE_ANTIHARDWT:
+            batch_size, out_channels, height_out, width_out = y.shape
+            # Reshape y for easier processing
+            flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
+            # Find winning neurons
+            win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
+            competing_idx = torch.arange(flat_weighted_inputs.size(1))
+            # Create anti-Hebbian mask
+            anti_hebbian_mask = torch.ones_like(flat_weighted_inputs) * -1  # All neurons start as anti-Hebbian
+            # Set winning neurons to Hebbian (positive)
+            anti_hebbian_mask[win_neurons, competing_idx] = 1
+            # Apply the mask to y
+            flat_hardwta_activs = flat_weighted_inputs * anti_hebbian_mask
+            # Reshape hardwta activations
+            hardwta_activs = flat_hardwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
+            # Compute yx using conv2d
+            yx = F.conv2d(x.transpose(0, 1), hardwta_activs.transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride).transpose(0, 1)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
+            # Compute yu
+            yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
+            # Compute update
+            update = yx - yu.view(-1, 1, 1, 1) * weight
+            # Normalization
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
+
+        if self.mode == self.MODE_BCM:
+
+            # # BCM using WT Competition
+            batch_size, out_channels, height_out, width_out = y.shape
+            # WTA competition
+            y_flat = y.transpose(0, 1).reshape(out_channels, -1)
+            win_neurons = torch.argmax(y_flat, dim=0)
+            wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
+            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0,
+                                                                                                                1)
+            y_wta = y * wta_mask
+            # Update theta (sliding threshold) using WTA output
+            y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
+            self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
+            # Compute BCM update with WTA
+            y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
+            bcm_factor = y_wta * y_minus_theta
+            # Compute update using conv2d for consistency with original code
+            yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
+                          stride=self.dilation, dilation=self.stride, groups=1).transpose(0, 1)
+            if self.groups != 1:
+                yx = yx.mean(dim=1, keepdim=True)
+            # Compute update
+            update = yx.view(weight.shape)
+            # Normalize update (optional, keeping it for consistency with original code)
+            update.div_(torch.abs(update).amax() + 1e-30)
+            self.delta_w += update
+
     @torch.no_grad()
     def local_update(self):
         """
-		This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
-		self.weight.grad of the weight parameter.
-
-		This function should be called before optimizer.step(), so that the optimizer will use the locally computed
-		update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
-		function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
-		self.weight.grad, and this function combines this value with self.delta_w as
-		self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
-		Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
 		"""
         new_weight = self.weight + 0.1 * self.alpha * self.delta_w
         # Ensure weights maintain their sign
         # Update weights
         self.weight.copy_(new_weight.abs())
+        # self.structural_plasticity()
         # Reset delta_w
         self.delta_w.zero_()
         # if self.weight.grad is None:

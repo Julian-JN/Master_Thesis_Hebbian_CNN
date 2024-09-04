@@ -4,7 +4,7 @@ import torch.nn.functional as F
 from sklearn.decomposition import PCA
 
 # from hebb import HebbianConv2d
-# from hebb_abs import HebbianConv2d
+from hebb_abs import HebbianConv2d
 # from hebb_ex_in import HebbianConv2d
 # from hebb_ffi import HebbianConv2d
 from hebb_depthwise import HebbianDepthConv2d
@@ -80,29 +80,29 @@ class Net_Depthwise(nn.Module):
             self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
             self.activ1 = Triangle(power=0.7)
 
-            self.bn2 = nn.BatchNorm2d(76, affine=False)
-            self.conv2 = HebbianDepthConv2d(in_channels=76, out_channels=76, kernel_size=3, stride=1, **hebb_params,
+            self.bn2 = nn.BatchNorm2d(96, affine=False)
+            self.conv2 = HebbianDepthConv2d(in_channels=96, out_channels=96, kernel_size=3, stride=1, **hebb_params,
                                             t_invert=0.65, padding=0)
-            self.bn_point2 = nn.BatchNorm2d(76, affine=False)
-            self.conv_point2 = HebbianConv2d(in_channels=76, out_channels=384, kernel_size=1, stride=1,
+            self.bn_point2 = nn.BatchNorm2d(96, affine=False)
+            self.conv_point2 = HebbianConv2d(in_channels=96, out_channels=384, kernel_size=1, stride=1,
                                              **hebb_params,t_invert=0.65, padding=0)
             # self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2, padding=0)
             self.activ2 = Triangle(power=1.4)
 
-            self.bn3 = nn.BatchNorm2d(307, affine=False)
-            self.conv3 = HebbianDepthConv2d(in_channels=307, out_channels=307, kernel_size=3, stride=1,
+            self.bn3 = nn.BatchNorm2d(384, affine=False)
+            self.conv3 = HebbianDepthConv2d(in_channels=384, out_channels=384, kernel_size=3, stride=1,
                                             **hebb_params,
                                             t_invert=0.25, padding=0)
-            self.bn_point3 = nn.BatchNorm2d(307, affine=False)
-            self.conv_point3 = HebbianConv2d(in_channels=307, out_channels=1536, kernel_size=1, stride=1,
+            self.bn_point3 = nn.BatchNorm2d(384, affine=False)
+            self.conv_point3 = HebbianConv2d(in_channels=384, out_channels=1536, kernel_size=1, stride=1,
                                              **hebb_params,t_invert=0.25, padding=0)
             self.pool3 = nn.AvgPool2d(kernel_size=2, stride=2, padding=0)
             self.activ3 = Triangle(power=1.)
 
             self.flatten = nn.Flatten()
             # Final fully-connected layer classifier
-            self.fc1 = nn.Linear(30700, 10)
-            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 30700)
+            self.fc1 = nn.Linear(38400, 10) # 38400 30700
+            self.fc1.weight.data = 0.11048543456039805 * torch.rand(10, 38400)
             self.dropout = nn.Dropout(0.5)
 
         elif version == "lagani":
@@ -370,7 +370,7 @@ class Net_Depthwise(nn.Module):
                         filter_img = np.transpose(filter_img, (1, 2, 0))
                         if i >= 20:  # Inhibitory
                             # Invert and scale the inhibitory weights to [0, 1] range for visualization
-                            filter_img = -filter_img
+                            # filter_img = -filter_img
                             filter_img = (filter_img - filter_img.min()) / (filter_img.max() - filter_img.min() + 1e-8)
                             # Apply a blue tint to distinguish inhibitory filters
                             # filter_img = filter_img * np.array([0.5, 0.5, 1.0])

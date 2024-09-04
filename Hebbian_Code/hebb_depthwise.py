@@ -455,13 +455,6 @@ class HebbianDepthConv2d(nn.Module):
             # Reshape to apply softmax within each channel
             y_depthwise_reshaped = y_depthwise.view(batch_size, in_channels, -1)
 
-            # # Oscillations and Synchrony
-            # if not hasattr(self, 'oscillation_phase'):
-            #     self.oscillation_phase = 0
-            # oscillation = 0.1 * torch.sin(torch.tensor(self.oscillation_phase))
-            # y_depthwise_reshaped += oscillation
-            # self.oscillation_phase += 0.1  # Update phase
-
             # Apply softmax within each channel
             flat_softwta_activs_depthwise = torch.softmax(self.t_invert * y_depthwise_reshaped, dim=2)
             # Turn all postsynaptic activations into anti-Hebbian

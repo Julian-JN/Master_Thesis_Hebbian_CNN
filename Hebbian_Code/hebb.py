@@ -443,13 +443,6 @@ class HebbianConv2d(nn.Module):
             # Compute soft WTA using softmax
             flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
 
-            # # Oscillations and Synchrony
-            # if not hasattr(self, 'oscillation_phase'):
-            #     self.oscillation_phase = 0
-            # oscillation = 0.1 * torch.sin(torch.tensor(self.oscillation_phase))
-            # flat_weighted_inputs += oscillation
-            # self.oscillation_phase += 0.1  # Update phase
-
             flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
             flat_softwta_activs = -flat_softwta_activs  # Turn all postsynaptic activations into anti-Hebbian
             # Find winning neurons
@@ -500,48 +493,6 @@ class HebbianConv2d(nn.Module):
             # Normalization
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
-
-        # if self.mode == self.MODE_HARDWT:
-        #     # 1. Get the shapes
-        #     batch_size, out_channels, height_out, width_out = y.shape
-        #     # 2. Find the winner neurons
-        #     y_flat = y.view(batch_size * out_channels, -1)  # Flatten spatial dimensions
-        #     win_neurons = torch.argmax(y_flat, dim=1)  # Shape: [batch_size * out_channels]
-        #     # 3. Create the initial WTA mask
-        #     wta_mask = F.one_hot(win_neurons, num_classes=height_out * width_out).view(batch_size, out_channels,
-        #                                                                                height_out, width_out).float()
-        #     if self.kernel_size != 1:
-        #         # 4. Find winning spatial locations (h, w) for each batch and channel
-        #         win_h = win_neurons // width_out  # Shape: [batch_size * out_channels]
-        #         win_w = win_neurons % width_out  # Shape: [batch_size * out_channels]
-        #         # 5. Create spatial indices
-        #         y_indices = torch.arange(height_out, device=y.device).view(1, 1, height_out, 1)
-        #         x_indices = torch.arange(width_out, device=y.device).view(1, 1, 1, width_out)
-        #         # 6. Calculate distances from winning neurons
-        #         win_h = win_h.view(batch_size, out_channels, 1, 1)  # Reshape to allow broadcasting
-        #         win_w = win_w.view(batch_size, out_channels, 1, 1)  # Reshape to allow broadcasting
-        #         distances = torch.sqrt((y_indices - win_h.float()) ** 2 + (x_indices - win_w.float()) ** 2)
-        #         # 7. Create the lateral inhibition mask
-        #         decay_factor = 0.5  # Adjust this value as needed
-        #         lateral_mask = torch.exp(-decay_factor * distances)
-        #         # 8. Combine the WTA mask with the lateral inhibition mask
-        #         final_mask = lateral_mask
-        #         # 9. Apply the mask to y
-        #         y_wta = y * final_mask
-        #     else:
-        #         y_wta = y * wta_mask
-        #     # 10. Compute yx using conv2d
-        #     yx = F.conv2d(x.transpose(0, 1), y_wta.transpose(0, 1), padding=0,
-        #                   stride=self.dilation, dilation=self.stride).transpose(0, 1)
-        #     if self.groups != 1:
-        #         yx = yx.mean(dim=1, keepdim=True)
-        #     # 11. Compute yu
-        #     yu = torch.sum(y_wta, dim=(0, 2, 3))
-        #     # 12. Compute update
-        #     update = yx - yu.view(-1, 1, 1, 1) * weight
-        #     # 13. Normalization
-        #     update.div_(torch.abs(update).amax() + 1e-30)
-        #     self.delta_w += update
 
         if self.mode == self.MODE_HARDWT:
             batch_size, out_channels, height_out, width_out = y.shape

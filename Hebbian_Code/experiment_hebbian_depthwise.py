@@ -105,14 +105,14 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"WTA-FFI-Surround-Hard-HebbianCNN-Depthwise",
-        project='HebbianCNN', model=model)
+        f"ABS-BCM-Hard-Surround-Hard-HebbianCNN-Depthwise",
+        project='Clean-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")

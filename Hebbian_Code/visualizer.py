@@ -27,7 +27,7 @@ def print_weight_statistics(layer, layer_name):
     print(f"Median: {weights.median().item():.4f}")
     print(f"25th Percentile: {weights.quantile(0.25).item():.4f}")
     print(f"75th Percentile: {weights.quantile(0.75).item():.4f}")
-    print(f"Number of positive weights: {(weights > 0).sum().item()}")
+    print(f"Number of positive weights: {(weights >= 0).sum().item()}")
     print(f"Number of negative weights: {(weights < 0).sum().item()}")
     print(f"Total number of weights: {weights.numel()}")
     print()
@@ -106,7 +106,7 @@ def plot_ltp_ltd_ex_in(layer, layer_name, num_filters=10, detailed_mode=False):
                     'Mean': filter_weights.mean().item(),
                     'Median': filter_weights.median().item(),
                     'Std Dev': filter_weights.std().item(),
-                    '% Positive': (filter_weights > 0).float().mean().item() * 100,
+                    '% Positive': (filter_weights >= 0).float().mean().item() * 100,
                     '% Negative': (filter_weights < 0).float().mean().item() * 100
                 })
             stat_df = pd.DataFrame(stats)

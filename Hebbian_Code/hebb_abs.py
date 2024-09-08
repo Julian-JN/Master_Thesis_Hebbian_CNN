@@ -8,6 +8,17 @@ import matplotlib.pyplot as plt
 
 import torch.nn.init as init
 
+"""
+    TODO:
+    OPTIMIZE CODE:
+        - Vectorization and In-Place operations
+        - Optimize data movement between CPU and GPU
+        - Simplify code: more modularity
+        - Removed redundant computations: Some calculations that were repeated in different modes have been consolidated into separate methods.
+        - Each learning mode now has its own update method, making it easier to maintain and extend.
+"""
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(0)
 
@@ -432,21 +443,23 @@ class HebbianConv2d(nn.Module):
             self.delta_w += update
 
         if self.mode == self.MODE_BCM:
-
+            dropout_mask = torch.bernoulli(torch.ones_like(y) * (1 - 0.5))
+            y = y * dropout_mask
             # # BCM using WT Competition
             batch_size, out_channels, height_out, width_out = y.shape
             # WTA competition
             y_flat = y.transpose(0, 1).reshape(out_channels, -1)
             win_neurons = torch.argmax(y_flat, dim=0)
             wta_mask = F.one_hot(win_neurons, num_classes=out_channels).float()
-            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0,
-                                                                                                                1)
+            wta_mask = wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0,1)
             y_wta = y * wta_mask
             # Update theta (sliding threshold) using WTA output
             y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
             self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
             # Compute BCM update with WTA
             y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
+            # y_minus_theta_max = y_wta - 1
+            # bcm_factor = y_wta * y_minus_theta * y_minus_theta_max
             bcm_factor = y_wta * y_minus_theta
             # Compute update using conv2d for consistency with original code
             yx = F.conv2d(x.transpose(0, 1), bcm_factor.transpose(0, 1), padding=0,
@@ -462,14 +475,8 @@ class HebbianConv2d(nn.Module):
     @torch.no_grad()
     def local_update(self):
         new_weight = self.weight + 0.1 * self.alpha * self.delta_w
-        # Ensure weights maintain their sign
         # Update weights
         self.weight.copy_(new_weight.abs())
         # self.structural_plasticity()
-        # Reset delta_w
         self.delta_w.zero_()
-        # if self.weight.grad is None:
-        #     self.weight.grad = -self.alpha * self.delta_w
-        # else:
-        #     self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
-        # self.delta_w.zero_()
+

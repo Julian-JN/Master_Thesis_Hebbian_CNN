@@ -169,7 +169,7 @@ class HebbianDepthConv2d(nn.Module):
 
         # # Depthwise separable weights
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        self.weight = nn.Parameter(weight_range * torch.randn(in_channels, 1, *self.kernel_size))
+        self.weight = nn.Parameter(weight_range * torch.abs(torch.randn(in_channels, 1, *self.kernel_size)))
 
         # self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
@@ -213,6 +213,16 @@ class HebbianDepthConv2d(nn.Module):
     def apply_lebesgue_norm(self, w):
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
+    def cosine(self, x, w):
+        w_normalized = F.normalize(w, p=2, dim=1)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, self.padding, self.dilation, self.groups)
+        x_squared = x.pow(2)
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+                                 self.groups)
+        x_norm = torch.sqrt(x_squared_sum + 1e-8)
+        cosine_sim = conv_output / x_norm
+        return cosine_sim
+
     def apply_weights(self, x, w):
         """
 		This function provides the logic for combining input x and weight w
@@ -224,13 +234,12 @@ class HebbianDepthConv2d(nn.Module):
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def compute_activation(self, x):
-        w = self.weight
+        w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
         y_depthwise = self.act(self.apply_weights(x, w))
-        # Channel expansion with 1x1 conv
         # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.act(x)
+        y_depthwise = self.cosine(x,w)
         return y_depthwise, w
 
     def forward(self, x):
@@ -557,19 +566,6 @@ class HebbianDepthConv2d(nn.Module):
 
     @torch.no_grad()
     def local_update(self):
-        """
-		This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
-		self.weight.grad of the weight parameter.
-
-		This function should be called before optimizer.step(), so that the optimizer will use the locally computed
-		update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
-		function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
-		self.weight.grad, and this function combines this value with self.delta_w as
-		self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
-		Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
-		"""
-        if self.weight.grad is None:
-            self.weight.grad = -self.alpha * self.delta_w
-        else:
-            self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
+        new_weight = self.weight + 0.1 * self.alpha * self.delta_w
+        self.weight.copy_(new_weight.abs())
         self.delta_w.zero_()

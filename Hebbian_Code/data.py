@@ -130,14 +130,12 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
         zca.fit(all_data, transpose=True, dataset=dataset)
 
         # Create a temporary loader with only ToTensor transform for visualization
-        temp_transform = T.Compose([T.Resize(32), T.ToTensor()])
-        temp_dataset = CIFAR10(root=os.path.join(root, dataset), train=True, download=True, transform=temp_transform)
-        temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-
-        # Get a batch for visualization
-        original_batch, _ = next(iter(temp_loader))
-        whitened_batch = zca.transform(original_batch)
-
+        # temp_transform = T.Compose([T.Resize(32), T.ToTensor()])
+        # temp_dataset = CIFAR10(root=os.path.join(root, dataset), train=True, download=True, transform=temp_transform)
+        # temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        # # Get a batch for visualization
+        # original_batch, _ = next(iter(temp_loader))
+        # whitened_batch = zca.transform(original_batch)
         # print("\nVisualization of ZCA effect:")
         # visualize_zca_effect(original_batch, whitened_batch)
         # print("\nCovariance check:")

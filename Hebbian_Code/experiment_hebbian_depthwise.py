@@ -111,7 +111,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"ABS-CosV2-BCM-Hard-Surround-Hard-HebbianCNN-Depthwise",
+        f"ABS-Cos-Mask-bcm-Hard-Surround-Hard-HebbianCNN-Depthwise",
         project='Clean-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -157,7 +157,7 @@ if __name__ == "__main__":
             inputs, _ = data
             inputs = inputs.to(device)
             # zero the parameter gradients
-            unsup_optimizer.zero_grad()
+            # unsup_optimizer.zero_grad()
             # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
@@ -173,12 +173,7 @@ if __name__ == "__main__":
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-            unsup_optimizer.step()
-            # # Ensure weights are positive after the update
-            # for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
-            #     with torch.no_grad():
-            #         layer.weight.data.abs_()
-            # optimize
+            # unsup_optimizer.step()
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')

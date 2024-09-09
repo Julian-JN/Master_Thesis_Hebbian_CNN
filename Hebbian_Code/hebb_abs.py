@@ -443,8 +443,8 @@ class HebbianConv2d(nn.Module):
             self.delta_w += update
 
         if self.mode == self.MODE_BCM:
-            dropout_mask = torch.bernoulli(torch.ones_like(y) * (1 - 0.5))
-            y = y * dropout_mask
+            # dropout_mask = torch.bernoulli(torch.ones_like(y) * (1 - 0.5))
+            # y = y * dropout_mask
             # # BCM using WT Competition
             batch_size, out_channels, height_out, width_out = y.shape
             # WTA competition

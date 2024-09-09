@@ -18,45 +18,9 @@ def normalize(x, dim=None):
 
 
 def symmetric_pad(x, padding):
-    """
-    Performs reflective padding on the 4D input tensor x.
-
-    Args:
-        x (torch.Tensor): 4D input tensor to be padded (batch, channels, height, width).
-        padding (int): Amount of padding to be applied on each side.
-
-    Returns:
-        torch.Tensor: Padded input tensor.
-    """
     if padding == 0:
         return x
-
-    batch_size, channels, height, width = x.size()
-
-    # Determine left, right, top, and bottom padding
-    left_pad = right_pad = padding
-    top_pad = bottom_pad = padding
-
-    # Adjust right and bottom padding if necessary to maintain symmetry
-    if width % 2 != 0:
-        right_pad += 1
-    if height % 2 != 0:
-        bottom_pad += 1
-
-    # Perform reflective padding
-    padded_x = torch.cat((
-        x[:, :, :, :padding].flip(dims=[-1]),  # Left padding
-        x,
-        x[:, :, :, -padding:].flip(dims=[-1])  # Right padding
-    ), dim=-1)
-
-    padded_x = torch.cat((
-        padded_x[:, :, :padding, :].flip(dims=[-2]),  # Top padding
-        padded_x,
-        padded_x[:, :, -padding:, :].flip(dims=[-2])  # Bottom padding
-    ), dim=-2)
-
-    return padded_x
+    return F.pad(x, (padding,) * 4, mode='reflect')
 
 
 def center_surround_init(out_channels, in_channels, kernel_size, groups=1):
@@ -215,7 +179,8 @@ class HebbianDepthConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        conv_output = F.conv2d(x, w_normalized, None, self.stride, self.padding, self.dilation, self.groups)
+        conv_output = symmetric_pad(x, self.padding)
+        conv_output = F.conv2d(conv_output, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
         x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
                                  self.groups)
@@ -233,11 +198,15 @@ class HebbianDepthConv2d(nn.Module):
         x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
+    def apply_surround_modulation(self, y):
+        return F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
+                        padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
+
     def compute_activation(self, x):
         w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
-        y_depthwise = self.act(self.apply_weights(x, w))
+        # y_depthwise = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         y_depthwise = self.cosine(x,w)
         return y_depthwise, w
@@ -245,8 +214,7 @@ class HebbianDepthConv2d(nn.Module):
     def forward(self, x):
         y_depthwise, w = self.compute_activation(x)
         if self.kernel !=1:
-            y_depthwise = F.conv2d(y_depthwise, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
-                     padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
+            y_depthwise = self.apply_surround_modulation(y_depthwise)
         if self.training:
             self.compute_update(x, y_depthwise, w)
         return y_depthwise
@@ -274,26 +242,6 @@ class HebbianDepthConv2d(nn.Module):
             update_depthwise = yx - yw
             update_depthwise.div_(torch.abs(update_depthwise).amax() + 1e-30)
             self.delta_w += update_depthwise
-
-        if self.mode == self.MODE_PRESYNAPTIC_COMPETITION:
-            # Compute yx using conv2d with input x
-            yx = F.conv2d(x.transpose(0, 1), y_depthwise.transpose(0, 1), padding=0,
-                          stride=self.dilation, dilation=self.stride)
-            yx = yx.view(self.out_channels, self.in_channels, *self.kernel_size)
-            # if self.groups != 1:
-            #     yx = yx.mean(dim=1, keepdim=True)
-            # Reshape yx to match the weight shape
-            yx = yx.view(weight.shape)
-            # Apply competition to yx
-            yx_competed = yx * weight
-            # Compute y * w
-            y_sum = y_depthwise.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
-            yw = y_sum * weight
-            # Compute update
-            update = yx_competed - yw
-            # Normalization
-            update.div_(torch.abs(update).amax() + 1e-30)
-            self.delta_w += update
 
         if self.mode == self.MODE_TEMPORAL_COMPETITION:
             batch_size, out_channels, height_out, width_out = y_depthwise.shape
@@ -479,10 +427,6 @@ class HebbianDepthConv2d(nn.Module):
             update.div_(torch.abs(update).amax() + 1e-30)
             self.delta_w += update
 
-
-    def generate_mask(self):
-        return torch.bernoulli(torch.full_like(self.weight, 1 - self.prune_rate))
-
     def compute_presynaptic_competition(self, m):
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
@@ -493,76 +437,6 @@ class HebbianDepthConv2d(nn.Module):
             return F.normalize(m, p=2, dim=0)
         else:
             raise ValueError(f"Unknown competition type: {self.competition_type}")
-
-    def cos_sim2d(self, x):
-        # Unfold the input
-        w = self.weight
-        x_unf = F.unfold(x, kernel_size=self.kernel_size, stride=self.stride)
-        # x_unf shape: [batch_size, C*k*k, H*W]
-        batch_size, channels_x_kernel, hw = x_unf.shape
-        out_channels, _, kernel_h, kernel_w = w.shape
-        # Reshape weights
-        w_reshaped = w.view(out_channels, -1)  # Shape: [out_channels, C*k*k]
-        # Reshape x_unf for batch matrix multiplication
-        x_unf = x_unf.transpose(1, 2).reshape(batch_size * hw, channels_x_kernel)
-        # Compute dot product
-        dot_product = torch.matmul(x_unf, w_reshaped.t())  # Shape: [batch_size*H*W, out_channels]
-        # Compute norms
-        norm_x = torch.norm(x_unf, p=2, dim=1, keepdim=True)  # Shape: [batch_size*H*W, 1]
-        norm_w = torch.norm(w_reshaped, p=2, dim=1, keepdim=True)  # Shape: [out_channels, 1]
-        # Avoid division by zero
-        norm_x[norm_x == 0] = 1e-8
-        norm_w[norm_w == 0] = 1e-8
-        # Compute cosine similarity
-        cosine_similarity = dot_product / (norm_x * norm_w.t())
-        # Reshape to match the original output shape
-        out_shape = (batch_size,
-                     (x.size(2) - self.kernel_size[0]) // self.stride[0] + 1,
-                     (x.size(3) - self.kernel_size[1]) // self.stride[1] + 1,
-                     out_channels)
-        cosine_similarity = cosine_similarity.view(*out_shape)
-        # Permute to get [batch_size, out_channels, H, W]
-        cosine_similarity = cosine_similarity.permute(0, 3, 1, 2)
-        return cosine_similarity
-
-    def lateral_inhibition_within_filter(self, y_normalized, out_channels, hw):
-        # y_normalized shape is [hw, out_channels] = [50176, 96]
-        y_reshaped = y_normalized.t()  # Shape: [96, 50176]
-        # Compute coactivation within each filter
-        coactivation = torch.mm(y_reshaped, y_reshaped.t())  # Shape: [96, 96]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_filter'):
-            self.lateral_weights_filter = torch.zeros_like(coactivation)
-        lateral_update = self.lateral_learning_rate * (coactivation - self.lateral_weights_filter)
-        self.lateral_weights_filter -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.mm(self.lateral_weights_filter, y_reshaped)
-        y_inhibited = F.relu(y_reshaped - inhibition)
-        return y_inhibited.t()  # Shape: [50176, 96]
-
-    def lateral_inhibition_same_patch(self, y_normalized, out_channels, hw):
-        # y_normalized shape is [hw, out_channels] = [50176, 96]
-        y_reshaped = y_normalized
-        # Compute coactivation for neurons looking at the same patch
-        coactivation = torch.mm(y_reshaped.t(), y_reshaped)  # Shape: [96, 96]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_patch'):
-            self.lateral_weights_patch = torch.zeros_like(coactivation)
-        lateral_update = self.lateral_learning_rate * (coactivation - self.lateral_weights_patch)
-        self.lateral_weights_patch -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.mm(y_reshaped, self.lateral_weights_patch)
-        y_inhibited = F.relu(y_reshaped - inhibition)
-        return y_inhibited  # Shape: [50176, 96]
-
-    def combined_lateral_inhibition(self, y_normalized, out_channels, hw):
-        # Apply inhibition within filter
-        y_inhibited_filter = self.lateral_inhibition_within_filter(y_normalized, out_channels, hw)
-        # Apply inhibition for the same patch
-        y_inhibited_patch = self.lateral_inhibition_same_patch(y_normalized, out_channels, hw)
-        # Combine the inhibitions (you can adjust the weighting as needed)
-        y_inhibited = 0.5 * y_inhibited_filter + 0.5 * y_inhibited_patch
-        return y_inhibited  # Shape: [50176, 96]
 
     @torch.no_grad()
     def local_update(self):

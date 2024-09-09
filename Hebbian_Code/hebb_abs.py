@@ -16,6 +16,10 @@ import torch.nn.init as init
         - Simplify code: more modularity
         - Removed redundant computations: Some calculations that were repeated in different modes have been consolidated into separate methods.
         - Each learning mode now has its own update method, making it easier to maintain and extend.
+        
+    ABS Changed:
+        - Unify Abs and Mixed together: Difference in weight intialisation, abs weights and update
+        - Everything else the same?
 """
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

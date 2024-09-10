@@ -6,7 +6,6 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 
 import data
-from model_full_wta import Net_Triangle
 # from model_full_softhebb import Net_Triangle
 
 import utils

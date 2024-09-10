@@ -125,7 +125,7 @@ if __name__ == "__main__":
     #     {"params": model.conv_point3.parameters(), "lr": 0.01, }
     # ], lr=0)
     # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
-    #
+
     hebb_params = [
         {'params': model.conv1.parameters(), 'lr': 0.1},
         {'params': model.conv2.parameters(), 'lr': 0.1},
@@ -140,9 +140,7 @@ if __name__ == "__main__":
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=1e-3)
-
     print(f'Processing Training batches: {len(trn_set)}')
-    # Unsupervised training with SoftHebb
 
     print("Initial Weight statistics")
     print_weight_statistics(model.conv1, 'conv1')
@@ -158,7 +156,6 @@ if __name__ == "__main__":
             inputs = inputs.to(device)
             # zero the parameter gradients
             # unsup_optimizer.zero_grad()
-            # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
             # Visualize changes before updating
@@ -180,13 +177,6 @@ if __name__ == "__main__":
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
     model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
-
-
-    # print("Weight statistics")
-    # print_weight_statistics(model.conv1, 'conv1')
-    # print_weight_statistics(model.conv2, 'conv2')
-    # print_weight_statistics(model.conv3, 'conv3')
-    # print_weight_statistics(model.conv_point2, 'conv3')
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
@@ -215,7 +205,7 @@ if __name__ == "__main__":
     # model.bn_point4.eval()
     print("Visualizing Test Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
-
+    # Train classifier with backpropagation
     print("Training Classifier")
     for epoch in range(50):
         model.fc1.train()
@@ -231,7 +221,6 @@ if __name__ == "__main__":
             labels = labels.to(device)
             # zero the parameter gradients
             sup_optimizer.zero_grad()
-            # forward + backward + optimize
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
@@ -263,9 +252,9 @@ if __name__ == "__main__":
         running_loss = 0.
         correct = 0
         total = 0
-        # since we're not training, we don't need to calculate the gradients for our outputs
         test_preds = []
         test_labels = []
+        # since we're not training, we don't need to calculate the gradients for our outputs
         with torch.no_grad():
             for data in tst_set:
                 images, labels = data

@@ -104,14 +104,13 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Hebbian(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"Normal-Hebbian-CNN",
-        project='Clean-HebbianCNN', model=model)
+        f"Hard-No_Opt-Hebbian-CNN",project='Clean-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -149,7 +148,7 @@ if __name__ == "__main__":
             inputs, _ = data
             inputs = inputs.to(device)
             # zero the parameter gradients
-            unsup_optimizer.zero_grad()
+            # unsup_optimizer.zero_grad()
             with torch.no_grad():
                 outputs = model(inputs)
             # Visualize changes before updating
@@ -165,7 +164,7 @@ if __name__ == "__main__":
             for layer in [model.conv1, model.conv2, model.conv3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-            unsup_optimizer.step()
+            # unsup_optimizer.step()
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')

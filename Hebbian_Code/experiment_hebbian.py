@@ -1,77 +1,44 @@
-from sklearn.manifold import TSNE
-from sklearn.preprocessing import StandardScaler
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.optim.lr_scheduler as sched
 
 import data
-# from model_full_softhebb import Net_Triangle
-
-import utils
+from model_hebb import Net_Hebbian
 import numpy as np
 import matplotlib.pyplot as plt
-import umap
 import warnings
 
+from logger import Logger
+from torchmetrics import Accuracy, Precision, Recall, F1Score, ConfusionMatrix
+import seaborn as sns
+import wandb
+from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clusters
+import pandas as pd
 
-def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
-                            n_components=2, random_state=42):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    features_list = []
-    labels_list = []
-    if model is not None:
-        model.eval()
-    with torch.no_grad():
-        for data, labels in dataloader:
-            data = data.to(device)
-            if model is not None:
-                if hasattr(model, 'features_extract'):
-                    print("Extracting model features")
-                    features = model.features_extract(data)
-                else:
-                    print("Extracting conv features")
-                    features = model.conv1(data)
-            else:
-                features = data
-            features = features.view(features.size(0), -1).cpu().numpy()
-            features_list.append(features)
-            labels_list.append(labels.numpy())
-    features = np.vstack(features_list)
-    labels = np.concatenate(labels_list)
-    # Normalize features
-    scaler = StandardScaler()
-    features_normalized = scaler.fit_transform(features)
-    # Apply dimensionality reduction
-    if method == 'tsne':
-        reducer = TSNE(n_components=dim, perplexity=perplexity, n_iter=1000, random_state=random_state)
-    elif method == 'umap':
-        reducer = umap.UMAP(n_neighbors=n_neighbors, min_dist=min_dist, n_components=dim, random_state=random_state)
-    else:
-        raise ValueError("Method must be either 'tsne' or 'umap'")
-    projected_data = reducer.fit_transform(features_normalized)
-    # Plotting
-    if dim == 2:
-        plt.figure(figsize=(12, 10))
-        scatter = plt.scatter(projected_data[:, 0], projected_data[:, 1], c=labels, alpha=0.5, cmap='tab10')
-        plt.colorbar(scatter, label='Class Labels')
-        plt.title(f'CIFAR-10 Data Clusters using {method.upper()} (2D)')
-        plt.xlabel(f'{method.upper()} Component 1')
-        plt.ylabel(f'{method.upper()} Component 2')
-    elif dim == 3:
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection='3d')
-        scatter = ax.scatter(projected_data[:, 0], projected_data[:, 1], projected_data[:, 2], c=labels, alpha=0.5,
-                             cmap='tab10')
-        fig.colorbar(scatter, label='Class Labels')
-        ax.set_title(f'CIFAR-10 Data Clusters using {method.upper()} (3D)')
-        ax.set_xlabel(f'{method.upper()} Component 1')
-        ax.set_ylabel(f'{method.upper()} Component 2')
-        ax.set_zlabel(f'{method.upper()} Component 3')
-    else:
-        raise ValueError("dim must be either 2 or 3")
-    plt.show()
+torch.manual_seed(0)
 
+def calculate_metrics(preds, labels, num_classes):
+    if num_classes == 2:
+        accuracy = Accuracy(task='binary', num_classes=num_classes).to(device)
+        precision = Precision(task='binary', average='weighted', num_classes=num_classes).to(device)
+        recall = Recall(task='binary', average='weighted', num_classes=num_classes).to(device)
+        f1 = F1Score(task='binary', average='weighted', num_classes=num_classes).to(device)
+        confusion_matrix = ConfusionMatrix(task='binary', num_classes=num_classes).to(device)
+    else:
+        accuracy = Accuracy(task='multiclass', num_classes=num_classes).to(device)
+        precision = Precision(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        recall = Recall(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        f1 = F1Score(task='multiclass', average='macro', num_classes=num_classes).to(device)
+        confusion_matrix = ConfusionMatrix(task='multiclass', num_classes=num_classes).to(device)
+
+    acc = accuracy(preds, labels)
+    prec = precision(preds, labels)
+    rec = recall(preds, labels)
+    f1_score = f1(preds, labels)
+    conf_matrix = confusion_matrix(preds, labels)
+
+    return acc, prec, rec, f1_score, conf_matrix
 
 class WeightNormDependentLR(optim.lr_scheduler._LRScheduler):
     """
@@ -97,7 +64,6 @@ class WeightNormDependentLR(optim.lr_scheduler._LRScheduler):
                 norm_diff = torch.abs(torch.linalg.norm(param.view(param.shape[0], -1), dim=1, ord=2) - 1) + 1e-10
                 new_lr.append(self.initial_lr_groups[i] * (norm_diff ** self.power_lr)[:, None, None, None])
         return new_lr
-
 
 class TensorLRSGD(optim.SGD):
     @torch.no_grad()
@@ -137,35 +103,45 @@ class TensorLRSGD(optim.SGD):
         return loss
 
 if __name__ == "__main__":
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+
+    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
-    model = Net_Triangle(hebb_params=hebb_param)
+    model = Net_Hebbian(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
+    wandb_logger = Logger(
+        f"Normal-Hebbian-CNN",
+        project='Clean-HebbianCNN', model=model)
+    logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
-    unsup_optimizer = TensorLRSGD([
-        {"params": model.conv1.parameters(), "lr": 0.08, },
-        {"params": model.conv2.parameters(), "lr": 0.005, },
-        {"params": model.conv3.parameters(), "lr": 0.01, }
-    ], lr=0)
-    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    # unsup_optimizer = TensorLRSGD([
+    #     {"params": model.conv1.parameters(), "lr": 0.08, },
+    #     {"params": model.conv2.parameters(), "lr": 0.005, },
+    #     {"params": model.conv3.parameters(), "lr": 0.01, },
+    # ], lr=0)
+    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
-    # hebb_params = [
-    #     {'params': model.conv1.parameters(), 'lr': 0.1},
-    #     {'params': model.conv2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv3.parameters(), 'lr': 0.1}
-    # ]
-    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    hebb_params = [
+        {'params': model.conv1.parameters(), 'lr': 0.1},
+        {'params': model.conv2.parameters(), 'lr': 0.1},
+        {'params': model.conv3.parameters(), 'lr': 0.1}
+    ]
+    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
-                                          whiten_lvl=None)
+                                          whiten_lvl=1e-3)
+    print(f'Processing Training batches: {len(trn_set)}')
 
-    # Unsupervised training with SoftHebb
+    print("Initial Weight statistics")
+    print_weight_statistics(model.conv1, 'conv1')
+    print_weight_statistics(model.conv2, 'conv2')
+    print_weight_statistics(model.conv3, 'conv3')
+
     running_loss = 0.0
     for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
@@ -174,47 +150,61 @@ if __name__ == "__main__":
             inputs = inputs.to(device)
             # zero the parameter gradients
             unsup_optimizer.zero_grad()
-            # forward + update computation
             with torch.no_grad():
                 outputs = model(inputs)
+            # Visualize changes before updating
+            if i % 200 == 0: # Every 100 datapoint
+                print(f'Saving details after batch {i}')
+                plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.conv2, 'conv2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.conv3, 'conv3', num_filters=10, detailed_mode=True)
+
+                model.visualize_filters('conv1')
+                model.visualize_filters('conv2')
+                model.visualize_filters('conv3')
             for layer in [model.conv1, model.conv2, model.conv3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-            # optimize
             unsup_optimizer.step()
-            unsup_lr_scheduler.step()
+            # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+    model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
+    model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
-    print("Classifier")
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
     model.conv2.requires_grad = False
+    model.conv3.requires_grad = False
+    # model.conv4.requires_grad = False
     model.conv1.eval()
     model.conv2.eval()
+    model.conv3.eval()
+    # model.conv4.eval()
     model.bn1.eval()
     model.bn2.eval()
-
-    model.conv3.requires_grad = False
-    model.conv3.eval()
     model.bn3.eval()
-    print("Visualizing Class separation")
-    visualize_data_clusters(tst_set, model=model, method='umap', dim=3)
+    # model.bn4.eval()
+    print("Visualizing Test Class separation")
+    visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+    # Train classifier with backpropagation
+    print("Training Classifier")
     for epoch in range(50):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0
         correct = 0
         total = 0
+        train_preds = []
+        train_labels = []
         for i, data in enumerate(trn_set, 0):
             inputs, labels = data
             inputs = inputs.to(device)
             labels = labels.to(device)
             # zero the parameter gradients
             sup_optimizer.zero_grad()
-            # forward + backward + optimize
             outputs = model(inputs)
             loss = criterion(outputs, labels)
             loss.backward()
@@ -224,16 +214,30 @@ if __name__ == "__main__":
             total += labels.size(0)
             _, predicted = torch.max(outputs.data, 1)
             correct += (predicted == labels).sum().item()
-        # Evaluation on test set
+            # For wandb logs
+            preds = torch.argmax(outputs, dim=1)
+            train_preds.append(preds)
+            train_labels.append(labels)
 
         print(f'Accuracy of the network on the train images: {100 * correct // total} %')
         print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
 
-        # on the test set
+        train_preds = torch.cat(train_preds, dim=0)
+        train_labels = torch.cat(train_labels, dim=0)
+        acc, prec, rec, f1_score, conf_matrix = calculate_metrics(train_preds, train_labels, 10)
+        logger.log({'train_accuracy': acc, 'train_precision': prec, 'train_recall': rec, 'train_f1_score': f1_score})
+        f, ax = plt.subplots(figsize=(15, 10))
+        sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
+        logger.log({"train_confusion_matrix": wandb.Image(f)})
+        plt.close(f)
+
+        # Evaluation on test set
         model.eval()
         running_loss = 0.
         correct = 0
         total = 0
+        test_preds = []
+        test_labels = []
         # since we're not training, we don't need to calculate the gradients for our outputs
         with torch.no_grad():
             for data in tst_set:
@@ -248,6 +252,19 @@ if __name__ == "__main__":
                 correct += (predicted == labels).sum().item()
                 loss = criterion(outputs, labels)
                 running_loss += loss.item()
+                # For wandb logs
+                preds = torch.argmax(outputs, dim=1)
+                test_preds.append(preds)
+                test_labels.append(labels)
 
         print(f'Accuracy of the network on the test images: {100 * correct / total} %')
         print(f'test loss: {running_loss / total:.3f}')
+
+        test_preds = torch.cat(test_preds, dim=0)
+        test_labels = torch.cat(test_labels, dim=0)
+        acc, prec, rec, f1_score, conf_matrix = calculate_metrics(test_preds, test_labels, 10)
+        logger.log({'test_accuracy': acc, 'test_precision': prec, 'test_recall': rec, 'test_f1_score': f1_score})
+        f, ax = plt.subplots(figsize=(15, 10))
+        sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
+        logger.log({"test_confusion_matrix": wandb.Image(f)})
+        plt.close(f)

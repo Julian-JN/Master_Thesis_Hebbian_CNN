@@ -141,8 +141,11 @@ class Net_Hebbian(nn.Module):
             x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
             x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
             x = self.activ4(self.conv4(self.bn4(x)))
-        else:  # softhebb and hardhebb
+        elif self.version == "hardhebb":
             x = self.activ2(self.conv2(self.bn2(x)))
+            x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
+        elif self.version == "softhebb":
+            x = self.pool3(self.activ2(self.conv2(self.bn2(x))))
             x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         return x
 
@@ -260,19 +263,18 @@ class Net_Hebbian(nn.Module):
 
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 25 filters (or less if there are fewer)
-        # tensor = tensor[:25]
-        excitatory = tensor[:20]
-        inhibitory = tensor[-5:]
-        # Symmetric normalization for excitatory weights
-        max_abs_exc = torch.max(torch.abs(excitatory))
-        norm_exc = excitatory / (max_abs_exc + 1e-8)
-        # Symmetric normalization for inhibitory weights
-        max_abs_inh = torch.max(torch.abs(inhibitory))
-        norm_inh = inhibitory / (max_abs_inh + 1e-8)
-        tensor = torch.cat((norm_exc, norm_inh))
-        # tensor = torch.cat((tensor[:20], tensor[-5:]))
+        tensor = tensor[:25]
+        # excitatory = tensor[:20]
+        # inhibitory = tensor[-5:]
+        # # Symmetric normalization for excitatory weights
+        # max_abs_exc = torch.max(torch.abs(excitatory))
+        # norm_exc = excitatory / (max_abs_exc + 1e-8)
+        # # Symmetric normalization for inhibitory weights
+        # max_abs_inh = torch.max(torch.abs(inhibitory))
+        # norm_inh = inhibitory / (max_abs_inh + 1e-8)
+        # tensor = torch.cat((norm_exc, norm_inh))
         # Normalize the tensor
-        # tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
+        tensor = (tensor - tensor.min()) / (tensor.max() - tensor.min() + 1e-8)
         # Move to CPU and convert to numpy
         tensor = tensor.cpu().detach().numpy()
 
@@ -310,7 +312,7 @@ class Net_Hebbian(nn.Module):
                     # Handle different filter shapes
                     if filter_img.shape[0] == 3:  # RGB filter (3, H, W)
                         filter_img = np.transpose(filter_img, (1, 2, 0))
-                        filter_img = (filter_img - filter_img.min()) / (filter_img.max() - filter_img.min() + 1e-8)
+                        # filter_img = (filter_img - filter_img.min()) / (filter_img.max() - filter_img.min() + 1e-8)
                     elif filter_img.shape[0] == 1:  # Grayscale filter (1, H, W)
                         filter_img = filter_img.squeeze()
                     else:  # Multi-channel filter (C, H, W), take mean across channels

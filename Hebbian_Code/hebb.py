@@ -452,31 +452,31 @@ class HebbianConv2d(nn.Module):
         else:
             raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
 
-    # @torch.no_grad()
-    # def local_update(self):
-    #     """
-	# 	This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
-	# 	self.weight.grad of the weight parameter.
-    #
-	# 	This function should be called before optimizer.step(), so that the optimizer will use the locally computed
-	# 	update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
-	# 	function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
-	# 	self.weight.grad, and this function combines this value with self.delta_w as
-	# 	self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
-	# 	Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
-	# 	"""
-    #     if self.weight.grad is None:
-    #         self.weight.grad = -self.alpha * self.delta_w
-    #     else:
-    #         self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
-    #     self.delta_w.zero_()
-
     @torch.no_grad()
-    # Weight Update
     def local_update(self):
-        new_weight = self.weight + 0.1 * self.alpha * self.delta_w
-        # Update weights
-        self.weight.copy_(new_weight)
-        # self.structural_plasticity()
+        """
+		This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
+		self.weight.grad of the weight parameter.
+
+		This function should be called before optimizer.step(), so that the optimizer will use the locally computed
+		update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
+		function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
+		self.weight.grad, and this function combines this value with self.delta_w as
+		self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
+		Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
+		"""
+        if self.weight.grad is None:
+            self.weight.grad = -self.alpha * self.delta_w
+        else:
+            self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
         self.delta_w.zero_()
+
+    # @torch.no_grad()
+    # # Weight Update
+    # def local_update(self):
+    #     new_weight = self.weight + 0.1 * self.alpha * self.delta_w
+    #     # Update weights
+    #     self.weight.copy_(new_weight)
+    #     # self.structural_plasticity()
+    #     self.delta_w.zero_()
 

@@ -86,13 +86,11 @@ class SoftHebbConv2d(nn.Module):
                 dilation=self.stride,
                 groups=1
             ).transpose(0, 1)  # (IC, OC, KH, KW) -> (OC, IC, KH, KW)
-
             # sum over batch, output pixels: each kernel element will influence all batches and output pixels.
             yu = torch.sum(torch.mul(softwta_activs, weighted_input), dim=(0, 2, 3))
             delta_weight = yx - yu.view(-1, 1, 1, 1) * self.weight
             delta_weight.div_(torch.abs(delta_weight).amax() + 1e-30)  # Scale [min/max , 1]
             self.weight.grad = delta_weight  # store in grad to be used with common optimizers
-
         return weighted_input
 
 

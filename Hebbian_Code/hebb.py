@@ -186,7 +186,6 @@ class HebbianConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
         # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def update_average_activity(self, y):
@@ -270,20 +269,21 @@ class HebbianConv2d(nn.Module):
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
 
     def compute_activation(self, x):
+        x = symmetric_pad(x, self.padding)
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
         y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         # y = self.cosine(x, w)
-        return y, w
+        return x,y, w
 
     def forward(self, x):
-        y, w = self.compute_activation(x)
+        x,y, w = self.compute_activation(x)
         # if self.lateral_inhibition_mode == "combined":
         #     y = self.combined_lateral_inhibition(y)
-        if self.kernel != 1:
-            y = self.apply_surround_modulation(y)
+        # if self.kernel != 1:
+            # y = self.apply_surround_modulation(y)
         if self.training:
             # self.update_average_activity(y)
             # self.synaptic_scaling()

@@ -145,7 +145,7 @@ class Net_Hebbian(nn.Module):
             x = self.activ2(self.conv2(self.bn2(x)))
             x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         elif self.version == "softhebb":
-            x = self.pool3(self.activ2(self.conv2(self.bn2(x))))
+            x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
             x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
         return x
 

@@ -234,7 +234,7 @@ class HebbianConv2d(nn.Module):
         self.lateral_weights_filter -= lateral_update  # Anti-Hebbian update
         # Apply inhibition
         inhibition = torch.bmm(y_reshaped, self.lateral_weights_filter.unsqueeze(0).expand(batch_size, -1, -1))
-        y_inhibited = F.relu(y_reshaped - inhibition)
+        y_inhibited = y_reshaped - inhibition
         return y_inhibited.transpose(1, 2).view(batch_size, out_channels, height, width)
 
     def lateral_inhibition_same_patch(self, y_normalized):
@@ -252,7 +252,7 @@ class HebbianConv2d(nn.Module):
         self.lateral_weights_patch -= lateral_update  # Anti-Hebbian update
         # Apply inhibition
         inhibition = torch.bmm(self.lateral_weights_patch.unsqueeze(0).expand(batch_size, -1, -1), y_reshaped)
-        y_inhibited = F.relu(y_reshaped - inhibition)
+        y_inhibited = y_reshaped - inhibition
         return y_inhibited.view(batch_size, out_channels, height, width)
 
     def combined_lateral_inhibition(self, y_normalized):
@@ -282,8 +282,8 @@ class HebbianConv2d(nn.Module):
         x,y, w = self.compute_activation(x)
         # if self.lateral_inhibition_mode == "combined":
         #     y = self.combined_lateral_inhibition(y)
-        # if self.kernel != 1:
-            # y = self.apply_surround_modulation(y)
+        if self.kernel != 1:
+            y = self.apply_surround_modulation(y)
         if self.training:
             # self.update_average_activity(y)
             # self.synaptic_scaling()
@@ -301,6 +301,10 @@ class HebbianConv2d(nn.Module):
             update = self.update_antihardwt(x, y, weight)
         elif self.mode == self.MODE_BCM:
             update = self.update_bcm(x, y, weight)
+        elif self.mode == self.MODE_TEMPORAL_COMPETITION:
+            update = self.update_temporal_competition(x, y, weight)
+        elif self.mode == self.MODE_ADAPTIVE_THRESHOLD:
+            update = self.update_adaptive_threshold(x, y, weight)
         else:
             raise NotImplementedError(f"Learning mode {self.mode} unavailable for {self.__class__.__name__} layer")
         # Weight Normalization and added to weight change buffer
@@ -349,6 +353,64 @@ class HebbianConv2d(nn.Module):
         yx = self.compute_yx(x, bcm_factor)
         update = yx.view(weight.shape)
         return update
+
+    def update_temporal_competition(self, x, y, weight):
+        self.update_activation_history(y)
+        temporal_winners = self.compute_temporal_winners(y)
+        y_winners = temporal_winners * y
+        y_winners = y_winners * self.apply_competition(y_winners)
+        yx = self.compute_yx(x, y_winners)
+        y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+        update = yx - y_sum * weight
+        return update
+
+    def update_adaptive_threshold(self, x, y, weight):
+        batch_size, out_channels, height_out, width_out = y.shape
+        similarities = F.conv2d(x, weight, stride=self.stride, padding=self.padding, groups=self.groups)
+        similarities = similarities / (torch.norm(weight.view(out_channels, -1), dim=1).view(1, -1, 1, 1) + 1e-10)
+        threshold = self.compute_adaptive_threshold(similarities)
+        winners = (similarities > threshold).float()
+        y_winners = winners * similarities
+        # y_winners = y_winners * self.apply_competition(y_winners)
+        yx = self.compute_yx(x, y_winners)
+        y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
+        update = yx - y_sum * weight
+        return update
+
+    def update_activation_history(self, y):
+        if self.activation_history is None:
+            self.activation_history = y.detach().clone()
+        else:
+            self.activation_history = torch.cat([self.activation_history, y.detach()], dim=0)
+            if self.activation_history.size(0)>self.temporal_window:
+                self.activation_history = self.activation_history[-self.temporal_window:]
+
+    def compute_temporal_winners(self, y):
+        batch_size, out_channels, height_out, width_out = y.shape
+        history_spatial = self.activation_history.view(-1, out_channels, height_out, width_out)
+        median_activations = torch.median(history_spatial, dim=0)[0]
+        temporal_threshold = torch.mean(median_activations, dim=(1, 2), keepdim=True)
+        return (y > temporal_threshold).float()
+
+    def compute_adaptive_threshold(self, similarities):
+        mean_sim = similarities.mean(dim=1, keepdim=True)
+        std_sim = similarities.std(dim=1, keepdim=True)
+        return mean_sim + self.competition_k * std_sim
+
+    def apply_competition(self, y):
+        batch_size, out_channels, height, width = y.shape
+        if self.mode in [self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD]:
+            if self.competition_type == 'hard':
+                y = y.view(batch_size, out_channels, -1)
+                top_k_values, top_k_indices = torch.topk(y, self.top_k, dim=1, largest=True, sorted=False)
+                y_compete = torch.zeros_like(y)
+                y_compete.scatter_(1, top_k_indices, top_k_values)
+                return y_compete.view(batch_size, out_channels, height, width)
+            elif self.competition_type == 'soft':
+                y_flat = y.view(batch_size, out_channels, -1)
+                y_soft = torch.softmax(self.t_invert * y_flat, dim=1)
+                return y_soft.view(batch_size, out_channels, height, width)
+        return y
 
     def compute_yx(self, x, y):
         # Computes common y*w term from Grossberg Instar
@@ -452,31 +514,31 @@ class HebbianConv2d(nn.Module):
         else:
             raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
 
-    @torch.no_grad()
-    def local_update(self):
-        """
-		This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
-		self.weight.grad of the weight parameter.
-
-		This function should be called before optimizer.step(), so that the optimizer will use the locally computed
-		update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
-		function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
-		self.weight.grad, and this function combines this value with self.delta_w as
-		self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
-		Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
-		"""
-        if self.weight.grad is None:
-            self.weight.grad = -self.alpha * self.delta_w
-        else:
-            self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
-        self.delta_w.zero_()
-
     # @torch.no_grad()
-    # # Weight Update
     # def local_update(self):
-    #     new_weight = self.weight + 0.1 * self.alpha * self.delta_w
-    #     # Update weights
-    #     self.weight.copy_(new_weight)
-    #     # self.structural_plasticity()
+    #     """
+	# 	This function transfers a previously computed weight update, stored in buffer self.delta_w, to the gradient
+	# 	self.weight.grad of the weight parameter.
+    #
+	# 	This function should be called before optimizer.step(), so that the optimizer will use the locally computed
+	# 	update as optimization direction. Local updates can also be combined with end-to-end updates by calling this
+	# 	function between loss.backward() and optimizer.step(). loss.backward will store the end-to-end gradient in
+	# 	self.weight.grad, and this function combines this value with self.delta_w as
+	# 	self.weight.grad = (1 - alpha) * self.weight.grad - alpha * self.delta_w
+	# 	Parameter alpha determines the scale of the local update compared to the end-to-end gradient in the combination.
+	# 	"""
+    #     if self.weight.grad is None:
+    #         self.weight.grad = -self.alpha * self.delta_w
+    #     else:
+    #         self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
     #     self.delta_w.zero_()
+
+    @torch.no_grad()
+    # Weight Update
+    def local_update(self):
+        new_weight = self.weight + 0.1 * self.alpha * self.delta_w
+        # Update weights
+        self.weight.copy_(new_weight)
+        # self.structural_plasticity()
+        self.delta_w.zero_()
 

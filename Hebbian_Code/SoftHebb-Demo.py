@@ -343,6 +343,97 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         raise ValueError("dim must be either 2 or 3")
     plt.show()
 
+
+def visualize_receptive_fields(model: nn.Module):
+    rfs_unnorm = []
+    step_sizes = [1]
+    rf_sizes = []
+
+    blocks = [
+        (model.bn1, model.conv1, model.activ1, model.pool1),
+        (model.bn2, model.conv2, model.activ2, model.pool2),
+        (model.bn3, model.conv3, model.activ3, model.pool3)
+    ]
+
+    for layer_idx, (bn, conv, activ, pool) in enumerate(blocks):
+        weight = conv.weight.data.cpu().numpy()
+        n_neurons = weight.shape[0]
+
+        kernel_size = conv.kernel_size
+        if isinstance(kernel_size, int):
+            kernel_size = (kernel_size, kernel_size)
+        stride = conv.stride[0] if isinstance(conv.stride, tuple) else conv.stride
+        pool_stride = pool.stride
+        pool_size = pool.kernel_size
+
+        if layer_idx == 0:
+            rf_size = kernel_size[0]  # Assuming square kernel
+        else:
+            # Updated calculation to include pooling effect
+            rf_size = step_sizes[-1] * (kernel_size[0] - 1) + rf_sizes[-1] + (pool_size - 1) * step_sizes[-1]
+
+        rf_sizes.append(rf_size)
+
+        if layer_idx < len(blocks) - 1:
+            step_sizes.append(stride * pool_stride * step_sizes[-1])
+
+        print(f"Layer {layer_idx + 1}: RF size = {rf_size}, Step size = {step_sizes[-1]}")
+
+        if layer_idx == 0:
+            rfs_this_layer = _process_first_layer(weight)
+        else:
+            rfs_this_layer = _process_subsequent_layer(weight, rfs_unnorm[-1], kernel_size[0], rf_size, step_sizes[-1], pool_size)
+
+        _plot_receptive_fields(rfs_this_layer, layer_idx, n_neurons)
+
+        rfs_unnorm.append(rfs_this_layer)
+
+def _plot_receptive_fields(rfs, layer_idx, n_neurons):
+    fig = plt.figure(figsize=(20, 20))
+    for i in range(n_neurons):
+        ax = fig.add_subplot(int(np.ceil(np.sqrt(n_neurons))), int(np.ceil(np.sqrt(n_neurons))), i+1)
+        ax.imshow(rfs[i])
+        ax.axis('off')
+    plt.suptitle(f'Receptive Fields for Layer {layer_idx + 1}')
+    plt.tight_layout()
+    plt.show()
+    plt.savefig(f"FigRFs{layer_idx+1}.png")
+    plt.close()
+
+
+def _process_first_layer(weight: np.ndarray) -> np.ndarray:
+    if weight.shape[1] == 1:  # If grayscale, repeat to make RGB
+        weight = np.repeat(weight, 3, axis=1)
+
+    wn = np.moveaxis(weight, 1, -1)
+    wn = 0.5 + 0.5 * wn / (1e-10 + np.max(np.abs(wn), axis=(1, 2, 3), keepdims=True))
+    return wn
+
+
+def _process_subsequent_layer(weight: np.ndarray, prev_rfs: np.ndarray, kernel_size: int,
+                              rf_size: int, step_size: int, pool_size: int) -> np.ndarray:
+    n_neurons, n_prev_neurons, kh, kw = weight.shape
+    prev_rf_size = prev_rfs.shape[1]
+
+    rfs = np.zeros((n_neurons, rf_size, rf_size, 3))
+    for nn in range(n_neurons):
+        pic = np.zeros((rf_size, rf_size, 3))
+        for xin in range(kh):
+            for yin in range(kw):
+                avgrf = weight[nn, :, xin, yin][:, np.newaxis, np.newaxis, np.newaxis] * prev_rfs
+                avgrf = np.sum(avgrf, axis=0)
+                x_start = xin * step_size
+                y_start = yin * step_size
+                pic[x_start:x_start+prev_rf_size, y_start:y_start+prev_rf_size, :] += avgrf
+
+        # Per-neuron normalization
+        pic = pic - np.min(pic)
+        pic = pic / (1e-9 + np.max(pic))
+        rfs[nn] = pic
+
+    return rfs
+
+
 # Main training loop CIFAR10
 if __name__ == "__main__":
     device = torch.device('cuda:0')
@@ -393,6 +484,9 @@ if __name__ == "__main__":
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"softhebb"}/conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"softhebb"}/conv2_filters_epoch_{1}.png')
+
+    print("Visualizing Receptive fields")
+    visualize_receptive_fields(model)
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
     print("Classifier")

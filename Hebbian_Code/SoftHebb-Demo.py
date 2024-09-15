@@ -3,8 +3,10 @@ Demo single-file script to train a ConvNet on CIFAR10 using SoftHebb, an unsuper
 learning algorithm
 """
 import math
+import os
 import warnings
 
+import cv2
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -17,7 +19,11 @@ import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 from torch.optim.lr_scheduler import StepLR
 import data
+
+from torchvision.transforms import Normalize
+
 import torchvision
+
 
 torch.manual_seed(0)
 
@@ -90,7 +96,9 @@ class SoftHebbConv2d(nn.Module):
             yu = torch.sum(torch.mul(softwta_activs, weighted_input), dim=(0, 2, 3))
             delta_weight = yx - yu.view(-1, 1, 1, 1) * self.weight
             delta_weight.div_(torch.abs(delta_weight).amax() + 1e-30)  # Scale [min/max , 1]
-            self.weight.grad = delta_weight  # store in grad to be used with common optimizers
+            delta_weight = delta_weight.contiguous()  # Make contiguous
+            # Store in grad to be used with common optimizers
+            self.weight.grad = delta_weight
         return weighted_input
 
 
@@ -118,12 +126,6 @@ class DeepSoftHebb(nn.Module):
         self.classifier.weight.data = 0.11048543456039805 * torch.rand(10, 24576)
         self.dropout = nn.Dropout(0.5)
 
-    def features_extract(self, x):
-        x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
-        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
-        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
-        return x
-
     def forward(self, x):
         # block 1
         out = self.pool1(self.activ1(self.conv1(self.bn1(x))))
@@ -133,6 +135,12 @@ class DeepSoftHebb(nn.Module):
         out = self.pool3(self.activ3(self.conv3(self.bn3(out))))
         # block 4
         return self.classifier(self.dropout(self.flatten(out)))
+
+    def features_extract(self, x):
+        x = self.pool1(self.activ1(self.conv1(self.bn1(x))))
+        x = self.pool2(self.activ2(self.conv2(self.bn2(x))))
+        x = self.pool3(self.activ3(self.conv3(self.bn3(x))))
+        return x
 
     def plot_grid(self, tensor, path, num_rows=5, num_cols=5, layer_name=""):
         # Ensure we're working with the first 25 filters (or less if there are fewer)
@@ -344,95 +352,148 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
     plt.show()
 
 
-def visualize_receptive_fields(model: nn.Module):
-    rfs_unnorm = []
-    step_sizes = [1]
-    rf_sizes = []
+class SaveFeatures():
+    def __init__(self, module):
+        self.hook = module.register_forward_hook(self.hook_fn)
 
-    blocks = [
-        (model.bn1, model.conv1, model.activ1, model.pool1),
-        (model.bn2, model.conv2, model.activ2, model.pool2),
-        (model.bn3, model.conv3, model.activ3, model.pool3)
-    ]
+    def hook_fn(self, module, input, output):
+        self.features = output
 
-    for layer_idx, (bn, conv, activ, pool) in enumerate(blocks):
-        weight = conv.weight.data.cpu().numpy()
-        n_neurons = weight.shape[0]
+    def close(self):
+        self.hook.remove()
 
-        kernel_size = conv.kernel_size
-        if isinstance(kernel_size, int):
-            kernel_size = (kernel_size, kernel_size)
-        stride = conv.stride[0] if isinstance(conv.stride, tuple) else conv.stride
-        pool_stride = pool.stride
-        pool_size = pool.kernel_size
 
-        if layer_idx == 0:
-            rf_size = kernel_size[0]  # Assuming square kernel
-        else:
-            # Updated calculation to include pooling effect
-            rf_size = step_sizes[-1] * (kernel_size[0] - 1) + rf_sizes[-1] + (pool_size - 1) * step_sizes[-1]
+def visualize_layer_patterns(model, layer_name, num_filters=16, image_size=32):
+    model.eval()
+    layer = dict([*model.named_modules()])[layer_name]
 
-        rf_sizes.append(rf_size)
-
-        if layer_idx < len(blocks) - 1:
-            step_sizes.append(stride * pool_stride * step_sizes[-1])
-
-        print(f"Layer {layer_idx + 1}: RF size = {rf_size}, Step size = {step_sizes[-1]}")
-
-        if layer_idx == 0:
-            rfs_this_layer = _process_first_layer(weight)
-        else:
-            rfs_this_layer = _process_subsequent_layer(weight, rfs_unnorm[-1], kernel_size[0], rf_size, step_sizes[-1], pool_size)
-
-        _plot_receptive_fields(rfs_this_layer, layer_idx, n_neurons)
-
-        rfs_unnorm.append(rfs_this_layer)
-
-def _plot_receptive_fields(rfs, layer_idx, n_neurons):
-    fig = plt.figure(figsize=(20, 20))
-    for i in range(n_neurons):
-        ax = fig.add_subplot(int(np.ceil(np.sqrt(n_neurons))), int(np.ceil(np.sqrt(n_neurons))), i+1)
-        ax.imshow(rfs[i])
-        ax.axis('off')
-    plt.suptitle(f'Receptive Fields for Layer {layer_idx + 1}')
+    if layer_name == 'conv1':  # Check by name instead of type
+        # For the first layer, directly visualize weights
+        weights = layer.weight.data.cpu().numpy()
+        fig, axes = plt.subplots(4, 4, figsize=(16, 16))
+        fig.suptitle(f'Filter Weights for {layer_name}')
+        for i in range(min(num_filters, weights.shape[0])):
+            weight = weights[i].transpose(1, 2, 0)
+            weight = (weight - weight.min()) / (weight.max() - weight.min())
+            ax = axes[i // 4, i % 4]
+            ax.imshow(weight)
+            ax.axis('off')
+            ax.set_title(f'Filter {i}')
+    else:
+        # For all layers, use activation maximization
+        device = next(model.parameters()).device
+        activations = SaveFeatures(layer)
+        fig, axes = plt.subplots(4, 4, figsize=(16, 16))
+        fig.suptitle(f'Receptive Fields for {layer_name}')
+        normalize = Normalize(mean=[0.4914, 0.4822, 0.4465], std=[0.2023, 0.1994, 0.2010])  # CIFAR-10 stats
+        for i in range(num_filters):
+            input_tensor = torch.randn(1, 3, image_size, image_size, device=device)
+            input_tensor.requires_grad_(True)
+            optimizer = torch.optim.Adam([input_tensor], lr=0.1)
+            for _ in range(100):  # Optimization steps
+                optimizer.zero_grad()
+                # Normalize the input
+                x = normalize(input_tensor)
+                # Forward pass
+                model(x)
+                # Compute loss
+                loss = -activations.features[0, i].mean()
+                # Backward pass
+                loss.backward()
+                # Update the input tensor
+                optimizer.step()
+                # Clamp values to valid range
+                with torch.no_grad():
+                    input_tensor.data.clamp_(0, 1)
+            # Visualize the result
+            img = input_tensor.squeeze().permute(1, 2, 0).detach().cpu().numpy()
+            img = (img - img.min()) / (img.max() - img.min())
+            ax = axes[i // 4, i % 4]
+            ax.imshow(img)
+            ax.axis('off')
+            ax.set_title(f'Filter {i}')
+        activations.close()
     plt.tight_layout()
     plt.show()
-    plt.savefig(f"FigRFs{layer_idx+1}.png")
-    plt.close()
 
+def l2_normalize(x):
+    """Constrain the input to have L2 norm of 1."""
+    norm = torch.norm(x)
+    return x / norm
 
-def _process_first_layer(weight: np.ndarray) -> np.ndarray:
-    if weight.shape[1] == 1:  # If grayscale, repeat to make RGB
-        weight = np.repeat(weight, 3, axis=1)
+def get_layer_output(model, x, target_layer):
+    # Forward pass through the model, stopping at the target layer
+    x = model.bn1(x)
+    x = model.conv1(x)
+    if target_layer == model.conv1:
+        return x
+    x = model.activ1(x)
+    x = model.pool1(x)
+    x = model.bn2(x)
+    x = model.conv2(x)
+    if target_layer == model.conv2:
+        return x
+    x = model.activ2(x)
+    x = model.pool2(x)
+    x = model.bn3(x)
+    x = model.conv3(x)
+    if target_layer == model.conv3:
+        return x
+    return None  # Return None if the target layer is not found
 
-    wn = np.moveaxis(weight, 1, -1)
-    wn = 0.5 + 0.5 * wn / (1e-10 + np.max(np.abs(wn), axis=(1, 2, 3), keepdims=True))
-    return wn
+def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), lr=0.1, steps=200, l2_norm=True):
+    model.eval()  # Set the model to evaluation mode
+    # Determine the number of filters in the given layer
+    out_channels = layer.out_channels
+    print(out_channels)
+    num_filters = min(num_filters, out_channels)  # Cap the number of filters to visualize
+    filter_images = []
 
+    for filter_idx in range(num_filters):  # Visualize the specified number of filters
+        # Initialize a random input image
+        input_image = torch.randn(input_shape, requires_grad=True, device='cuda')
+        input_image.data = l2_normalize(input_image.data) if l2_norm else input_image.data
 
-def _process_subsequent_layer(weight: np.ndarray, prev_rfs: np.ndarray, kernel_size: int,
-                              rf_size: int, step_size: int, pool_size: int) -> np.ndarray:
-    n_neurons, n_prev_neurons, kh, kw = weight.shape
-    prev_rf_size = prev_rfs.shape[1]
+        # Use Adam optimizer to maximize the activation
+        optimizer = optim.Adam([input_image], lr=lr)
 
-    rfs = np.zeros((n_neurons, rf_size, rf_size, 3))
-    for nn in range(n_neurons):
-        pic = np.zeros((rf_size, rf_size, 3))
-        for xin in range(kh):
-            for yin in range(kw):
-                avgrf = weight[nn, :, xin, yin][:, np.newaxis, np.newaxis, np.newaxis] * prev_rfs
-                avgrf = np.sum(avgrf, axis=0)
-                x_start = xin * step_size
-                y_start = yin * step_size
-                pic[x_start:x_start+prev_rf_size, y_start:y_start+prev_rf_size, :] += avgrf
+        for step in range(steps):
+            optimizer.zero_grad()
 
-        # Per-neuron normalization
-        pic = pic - np.min(pic)
-        pic = pic / (1e-9 + np.max(pic))
-        rfs[nn] = pic
+            # Forward pass through the model until the desired layer
+            activation = get_layer_output(model, input_image, layer)
+            if activation is None:
+                raise ValueError("Layer not found in the model.")
 
-    return rfs
+            # Maximize the activation of the selected filter
+            loss = -activation[0, filter_idx].mean()  # Gradient ascent
+            loss.backward()
+            optimizer.step()
 
+            if l2_norm:
+                input_image.data = l2_normalize(input_image.data)
+
+        # Store the optimized image for the filter
+        optimized_image = input_image.detach().cpu().squeeze(0).permute(1, 2, 0)
+        optimized_image = (optimized_image - optimized_image.min()) / (optimized_image.max() - optimized_image.min())
+        filter_images.append(optimized_image)
+
+    # Plot the filter visualizations in a grid (adjust grid size dynamically)
+    grid_size = int(num_filters ** 0.5) + (1 if num_filters ** 0.5 % 1 > 0 else 0)
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
+    axes = axes.flatten()
+
+    for i in range(num_filters):
+        axes[i].imshow(filter_images[i].numpy())
+        axes[i].set_title(f'Filter {i}')
+        axes[i].axis('off')
+
+    # Turn off any unused subplots
+    for j in range(num_filters, len(axes)):
+        axes[j].axis('off')
+
+    plt.tight_layout()
+    plt.show()
 
 # Main training loop CIFAR10
 if __name__ == "__main__":
@@ -463,9 +524,9 @@ if __name__ == "__main__":
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
                                           whiten_lvl=None)
 
-    print("Visualizing Initial Filters")
-    model.visualize_filters('conv1', f'results/{"softhebb"}/conv1_filters_epoch_{1}.png')
-    model.visualize_filters('conv2', f'results/{"softhebb"}/conv2_filters_epoch_{1}.png')
+    # print("Visualizing Initial Filters")
+    # model.visualize_filters('conv1', f'results/{"softhebb"}/conv1_filters_epoch_{1}.png')
+    # model.visualize_filters('conv2', f'results/{"softhebb"}/conv2_filters_epoch_{1}.png')
 
     # Unsupervised training with SoftHebb
     running_loss = 0.0
@@ -486,8 +547,17 @@ if __name__ == "__main__":
     model.visualize_filters('conv2', f'results/{"softhebb"}/conv2_filters_epoch_{1}.png')
 
     print("Visualizing Receptive fields")
-    visualize_receptive_fields(model)
-    # Supervised training of classifier
+    # Visualize the first 25 filters from conv1
+    visualize_filters(model, layer=model.conv1, num_filters=25)
+    # Visualize the first 25 filters from conv2
+    visualize_filters(model, layer=model.conv2, num_filters=25)
+    # Visualize the first 25 filters from conv3
+    visualize_filters(model, layer=model.conv3, num_filters=25)
+    # Visualize receptive fields for different layers
+    visualize_layer_patterns(model, 'conv1')
+    visualize_layer_patterns(model, 'conv2')
+    visualize_layer_patterns(model, 'conv3')
+
     # set requires grad false and eval mode for all modules but classifier
     print("Classifier")
     unsup_optimizer.zero_grad()

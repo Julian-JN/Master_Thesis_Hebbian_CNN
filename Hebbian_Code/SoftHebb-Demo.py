@@ -563,15 +563,16 @@ def get_random_start(x0, epsilon):
     r = torch.randn(batch_size, c * h * w, device=x0.device)
     r = r / r.norm(dim=1, keepdim=True)
     r = r.view_as(x0)
-    return x0 + 0.00001 * torch.tensor(epsilon, device=x0.device) * r
+    return x0 + 0.00001 * epsilon.clone().detach().to(x0.device) * r
 
 
 def normalize_lp_norms(x, p=2):
     norms = x.view(x.shape[0], -1).norm(p=p, dim=1)
-    return x / norms.view(-1, 1, 1, 1)
+    return x / norms.view(-1, 1, 1, 1).clamp(min=1e-12)
 
 
 def project(x, x0, epsilon):
+    epsilon = epsilon.clone().detach().to(x.device)
     delta = x - x0
     sphere = epsilon * normalize_lp_norms(delta, p=2).abs()
     sphere = sphere - sphere.min()
@@ -584,6 +585,7 @@ def project(x, x0, epsilon):
 def optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations, random_start, criterion, epsilon):
     model.eval()
     x0 = torch.zeros(input_shape, device='cuda')
+    epsilon = epsilon.clone().detach().to(x0.device)
     if random_start:
         x = get_random_start(x0, epsilon)
     else:
@@ -604,12 +606,12 @@ def optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations
     return x.detach(), -loss.item()
 
 
-def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.001, iterations=500,
-                      random_start=True, nb_start=1, l2_norm=True, max_val=1e10, eps=1e-5, epsilons=None):
+def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.01, iterations=1000,
+                      random_start=True, nb_start=5, l2_norm=True, max_val=1e10, eps=1e-5, epsilons=None):
     if epsilons is None:
-        epsilons = torch.tensor([255.0]) / 255.0  # Default value as PyTorch tensor
+        epsilons = torch.tensor([255.0], device='cuda') / 255.0
     else:
-        epsilons = torch.tensor(epsilons)  # Convert numpy array to PyTorch tensor
+        epsilons = torch.tensor(epsilons, device='cuda')
     model.eval()
     model = remove_padding(model, layer)
     receptive_field_size = calculate_receptive_field(model, layer)
@@ -629,7 +631,7 @@ def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), 
             optimized_image, activation = optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations,
                                                           random_start, criterion, epsilons)
             if activation > best_activation:
-                print(f"New best Receptive Field found in Reboot {start}")
+                print(f"New best Receptive Field found for filter {filter_idx} in Reboot {start}")
                 best_activation = activation
                 best_image = optimized_image
         optimized_image = best_image.cpu().squeeze(0).permute(1, 2, 0)

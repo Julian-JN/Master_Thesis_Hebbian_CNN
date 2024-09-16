@@ -23,20 +23,18 @@ import data
 from torchvision.transforms import Normalize
 from tqdm import tqdm
 
-import torchvision
-import foolbox
-from foolbox import PyTorchModel
-from foolbox.attacks.gradient_descent_base import BaseGradientDescent, normalize_lp_norms, uniform_l2_n_balls
-from foolbox.criteria import Misclassification, TargetedMisclassification
-from foolbox.devutils import flatten
-from foolbox.distances import l2
-from foolbox.models.base import Model
-from foolbox.types import Bounds
-from typing import Union, Any
-import eagerpy as ep
-from foolbox.attacks.base import T, get_criterion, raise_if_kwargs
-
-
+# import torchvision
+# import eagerpy as ep
+# import foolbox
+# from foolbox import PyTorchModel
+# from foolbox.attacks.base import T, get_criterion, raise_if_kwargs
+# from foolbox.attacks.gradient_descent_base import BaseGradientDescent, normalize_lp_norms, uniform_l2_n_balls
+# from foolbox.criteria import Misclassification, TargetedMisclassification
+# from foolbox.devutils import flatten
+# from foolbox.distances import l2
+# from foolbox.models.base import Model
+# from foolbox.types import Bounds
+# from typing import Union, Any
 
 torch.manual_seed(0)
 
@@ -364,131 +362,70 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         raise ValueError("dim must be either 2 or 3")
     plt.show()
 
-class ChooseNeuronFlat(torch.nn.Module):
-    def __init__(self, idx):
-        super(ChooseNeuronFlat, self).__init__()
-        self.idx = idx
-
-    def forward(self, x):
-        return x[:, self.idx].view(-1)
-
-
-class SingleMax(foolbox.criteria.Criterion):
-    def __init__(self, max_val: float, eps: float):
-        super().__init__()
-        self.max_val: float = max_val
-        self.eps: float = eps
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(Max={self.max_val}, eps={self.eps})"
-
-    def __call__(self, perturbed: T, outputs: T) -> T:
-        outputs_, restore_type = ep.astensor_(outputs)
-        del perturbed, outputs
-        if self.max_val is None:
-            is_adv = outputs_ > 0 or outputs_ <= 0
-        else:
-            is_adv = (self.max_val - outputs_) < self.eps
-        return restore_type(is_adv)
+# class ChooseNeuronFlat(torch.nn.Module):
+#     def __init__(self, idx):
+#         super(ChooseNeuronFlat, self).__init__()
+#         self.idx = idx
+#
+#     def forward(self, x):
+#         # return x[:, self.idx].view(-1)
+#         selected_channel = x[:, self.idx, :, :]
+#         # Flatten to a 1D tensor
+#         return selected_channel.view(-1)
 
 
-def attack_model(model, data, labels, epsilons, iterations, random_start=True, nb_start=20, step_size=0.01 / 0.3,
-                 criterion=None, device=None):
-    attack = L2ProjGradientDescent(steps=iterations, random_start=random_start, rel_stepsize=step_size)
-    bounds = (0, 1)
-    fmodel = PyTorchModel(model, device=device, bounds=bounds)
-    raw_advs, clipped_advs, success = attack(model=fmodel, inputs=data, criterion=criterion, epsilons=epsilons)
-    raw_advs = torch.stack(raw_advs)
-    clipped_advs = torch.stack(clipped_advs)
-    # For debugging
-    # print('Raw : x norm', raw_advs.norm().item(), 'x max', raw_advs.max().item(), 'x min', raw_advs.min().item())
-    # print('Clipped : x norm', clipped_advs.norm().item(), 'x max', clipped_advs.max().item(), 'x min', clipped_advs.min().item())
-    for start in range(1, nb_start):
-        new_raw_advs, new_clipped_advs, new_success = attack(model=fmodel, inputs=data, criterion=criterion,
-                                                             epsilons=epsilons)
-        new_raw_advs = torch.stack(new_raw_advs)
-        raw_advs[new_success == 1] = new_raw_advs[new_success == 1]
+# class SingleMax:
+#     def __init__(self, max_val: float, eps: float):
+#         super().__init__()
+#         self.max_val: float = max_val
+#         self.eps: float = eps
+#
+#     def __call__(self, outputs):
+#         if self.max_val is None:
+#             is_adv = outputs > 0 | outputs <= 0
+#         else:
+#             is_adv = (self.max_val - outputs) < self.eps
+#         return is_adv
 
-        new_clipped_advs = torch.stack(new_clipped_advs)
-        clipped_advs[new_success == 1] = new_clipped_advs[new_success == 1]
-        success[new_success == 1] = 1
-    return raw_advs, clipped_advs, success
+class L2ProjGradientDescent:
+    def __init__(self, steps, rel_stepsize, random_start=True):
+        self.steps = steps
+        self.rel_stepsize = rel_stepsize
+        self.random_start = random_start
 
-
-class L2ProjGradientDescent(BaseGradientDescent):
-    distance = l2
-
-    def get_random_start(self, x0: ep.Tensor, epsilon: float) -> ep.Tensor:
-        print('Getting random start')
-        batch_size, n = flatten(x0).shape
-        r = uniform_l2_n_balls(x0, batch_size, n).reshape(x0.shape)
-        return x0 + 0.00001 * epsilon * r
-
-    def normalize(
-            self, gradients: ep.Tensor, *, x: ep.Tensor, bounds: Bounds
-    ) -> ep.Tensor:
-        # This is to normalize gradients
-        return gradients
-
-    def project(self, x: ep.Tensor, x0: ep.Tensor, epsilon: float) -> ep.Tensor:
-        sphere = epsilon * normalize_lp_norms(x, p=2).abs()
-        sphere = sphere - sphere.min()
-        if not sphere.max() > 0 and not sphere.min() < 0:
-            return sphere
-        else:
-            return sphere / sphere.max()
-
-    def run(
-            self,
-            model: Model,
-            inputs: T,
-            criterion: Union[Misclassification, TargetedMisclassification, T],
-            *,
-            epsilon: float,
-            **kwargs: Any,
-    ) -> T:
-        raise_if_kwargs(kwargs)
-        x0, restore_type = ep.astensor_(inputs)
-        criterion_ = get_criterion(criterion)
-        del inputs, criterion, kwargs
-
-        # perform a gradient ascent (targeted attack) or descent (untargeted attack)
-        if isinstance(criterion_, Misclassification):
-            gradient_step_sign = 1.0
-            classes = criterion_.labels
-            loss_fn = self.get_loss_fn(model, classes)
-        elif hasattr(criterion_, "target_classes"):
-            gradient_step_sign = -1.0
-            classes = criterion_.target_classes  # type: ignore
-            loss_fn = self.get_loss_fn(model, classes)
-        elif hasattr(criterion_, "max_val"):
-            def loss_fn_max(inputs: ep.Tensor) -> ep.Tensor:
-                out = model(inputs)
-                return out
-            loss_fn = loss_fn_max
-            gradient_step_sign = 1.0
-        else:
-            raise ValueError("unsupported criterion")
-
-        if self.abs_stepsize is None:
-            stepsize = self.rel_stepsize * epsilon
-        else:
-            stepsize = self.abs_stepsize
-
+    def __call__(self, model, inputs, criterion, epsilon):
         if self.random_start:
-            x = self.get_random_start(x0, epsilon)
-            x = ep.clip(x, *model.bounds)
+            x = inputs + torch.randn_like(inputs) * 0.001 * epsilon
+            x = torch.clamp(x, 0, 1)
         else:
-            x = x0
+            x = inputs.clone()
+        x.requires_grad_(True)
+        for _ in range(self.steps):
+            model.zero_grad()
+            outputs = model(x)
+            loss = criterion(x, outputs).sum()  # Negative for ascent
+            loss.backward()
+            with torch.no_grad():
+                gradients = x.grad
+                print(gradients)
+                stepsize = self.rel_stepsize * epsilon
+                x += stepsize * gradients.sign()
+                x = torch.clamp(x, 0, 1)  # Project to valid image range
+            x.grad.zero_()
+        return x.detach()
 
-        for i_s in range(self.steps):
-            val, gradients = self.value_and_grad(loss_fn, x)
-            gradients = self.normalize(gradients, x=x, bounds=model.bounds)
-            x = x + gradient_step_sign * stepsize * gradients
-            x = self.project(x, x0, epsilon)
-            x = ep.clip(x, *model.bounds)
-        return restore_type(x)
-
+def attack_model(model, data, epsilons, iterations, step_size, criterion, device, random_start=True, nb_start=1):
+    attack = L2ProjGradientDescent(steps=iterations, rel_stepsize=step_size, random_start=random_start)
+    epsilon = epsilons[0] if isinstance(epsilons, (list, np.ndarray)) else epsilons
+    best_input = None
+    best_activation = float('-inf')
+    for _ in range(nb_start):
+        optimized_input = attack(model, data, criterion, epsilon)
+        activation = model(optimized_input).max().item()
+        if activation > best_activation:
+            best_input = optimized_input
+            best_activation = activation
+    return best_input
 
 def get_partial_model(model, target_layer):
     layers = []
@@ -498,70 +435,62 @@ def get_partial_model(model, target_layer):
             break
     return torch.nn.Sequential(*layers)
 
-
-def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.1, iterations=500,
-                      random_start=False, nb_start=1):
-    model.eval()
-    partial_model = get_partial_model(model, layer)
-    partial_model = remove_padding(partial_model, layer)
-    receptive_field_size = calculate_receptive_field(partial_model, layer)
-    print(f"Receptive field size: {receptive_field_size}x{receptive_field_size}")
-    input_shape = (1, 3, receptive_field_size, receptive_field_size)
-
-    if hasattr(layer, 'out_channels'):
-        out_channels = layer.out_channels
-    else:
-        raise ValueError("The target layer does not have an 'out_channels' attribute.")
-
-    num_filters = min(num_filters, out_channels)
-    filter_images = []
-
-    for filter_idx in range(num_filters):
-        choose_neuron = ChooseNeuronFlat(filter_idx)
-        criterion = SingleMax(max_val=float('inf'), eps=1e-6)
-
-        data = torch.zeros(input_shape, device='cuda')
-        epsilons = [1.0]  # We use a single epsilon value of 1.0 for visualization
-
-        raw_advs, clipped_advs, success = attack_model(
-            model=torch.nn.Sequential(partial_model, choose_neuron),
-            data=data,
-            epsilons=epsilons,
-            iterations=iterations,
-            random_start=random_start,
-            nb_start=nb_start,
-            step_size=step_size,
-            criterion=criterion,
-            device='cuda'
-        )
-
-        optimized_image = clipped_advs[0].cpu().squeeze(0).permute(1, 2, 0)
-        optimized_image = (optimized_image - optimized_image.min()) / (optimized_image.max() - optimized_image.min())
-        filter_images.append(optimized_image)
-
-    # Plot the filter visualizations in a grid
-    grid_size = int(num_filters ** 0.5) + (1 if num_filters ** 0.5 % 1 > 0 else 0)
-    fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
-    axes = axes.flatten()
-    for i in range(num_filters):
-        axes[i].imshow(filter_images[i].numpy())
-        axes[i].set_title(f'Filter {i + 1}')
-        axes[i].axis('off')
-    # Turn off unused subplots
-    for j in range(num_filters, len(axes)):
-        axes[j].axis('off')
-    plt.tight_layout()
-    plt.show()
+# def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.1, iterations=500, random_start=True, nb_start=1):
+#     model.eval()
+#     partial_model = get_partial_model(model, layer)
+#     partial_model = remove_padding(partial_model, layer)
+#     receptive_field_size = calculate_receptive_field(partial_model, layer)
+#     print(f"Receptive field size: {receptive_field_size}x{receptive_field_size}")
+#     input_shape = (1, 3, receptive_field_size, receptive_field_size)
+#
+#     if hasattr(layer, 'out_channels'):
+#         out_channels = layer.out_channels
+#     else:
+#         raise ValueError("The target layer does not have an 'out_channels' attribute.")
+#
+#     num_filters = min(num_filters, out_channels)
+#     filter_images = []
+#
+#     for filter_idx in range(num_filters):
+#         choose_neuron = ChooseNeuronFlat(filter_idx)
+#         criterion = SingleMax(max_val=1e10, eps=1e-05)
+#
+#         data = torch.zeros(input_shape, device='cuda')
+#         epsilons = np.array([255]) / 255  # Matching the original code's epsilon definition
+#
+#         optimized_input = attack_model(
+#             model=torch.nn.Sequential(partial_model, choose_neuron).eval(),
+#             data=data,
+#             epsilons=epsilons,
+#             iterations=iterations,
+#             step_size=step_size,
+#             criterion=criterion,
+#             device='cuda',
+#             random_start=random_start,
+#             nb_start=nb_start)
+#
+#         optimized_image = optimized_input.cpu().squeeze(0).permute(1, 2, 0)
+#         optimized_image = (optimized_image - optimized_image.min()) / (optimized_image.max() - optimized_image.min())
+#         filter_images.append(optimized_image)
+#
+#     # Plot the filter visualizations in a grid
+#     grid_size = int(num_filters ** 0.5) + (1 if num_filters ** 0.5 % 1 > 0 else 0)
+#     fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
+#     axes = axes.flatten()
+#     for i in range(num_filters):
+#         axes[i].imshow(filter_images[i].numpy())
+#         axes[i].set_title(f'Filter {i + 1}')
+#         axes[i].axis('off')
+#     # Turn off unused subplots
+#     for j in range(num_filters, len(axes)):
+#         axes[j].axis('off')
+#     plt.tight_layout()
+#     plt.show()
 
 def l2_normalize(x, epsilon=1.0):
     """Project x onto the L2 sphere with radius epsilon."""
     norm = torch.norm(x)
     return x * (epsilon / norm)
-
-def normalize_gradient(grad):
-    """Normalize gradient to have L2 norm of 1."""
-    norm = torch.norm(grad)
-    return grad / (norm + 1e-10)  # Add small epsilon to avoid division by zero
 
 def calculate_receptive_field(model, target_layer):
     """
@@ -589,6 +518,7 @@ def calculate_receptive_field(model, target_layer):
             break
     return current_rf
 
+
 def get_layer_output(model, x, target_layer):
     """
     Forward pass through the model, stopping at the target custom Hebbian layer.
@@ -599,16 +529,87 @@ def get_layer_output(model, x, target_layer):
             return x  # Return the output of the target Hebbian layer
     raise ValueError(f"Target layer {target_layer} not found in the model.")
 
+
 def remove_padding(model, target_layer):
     """Remove padding from layers before the target layer."""
     for layer in model.children():
         if isinstance(layer, (nn.Conv2d, SoftHebbConv2d)):
             layer.padding = (0, 0)
+        if isinstance(layer, (nn.MaxPool2d, nn.AvgPool2d)):
+            layer.padding = (0, 0)
         if layer == target_layer:
             break
     return model
 
-def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.1, iterations=500, random_start=False, nb_start=1, l2_norm=True):
+
+class SingleMax:
+    def __init__(self, max_val: float, eps: float):
+        self.max_val = max_val
+        self.eps = eps
+
+    def __call__(self, outputs):
+        if self.max_val is None:
+            return outputs > 0
+        else:
+            return (self.max_val - outputs) < self.eps
+
+def normalize_gradient(grad):
+    """Normalize gradient to have L2 norm of 1."""
+    norm = torch.norm(grad.view(grad.shape[0], -1), p=2, dim=1)
+    return grad / (norm.view(-1, 1, 1, 1) + 1e-10)  # Add small epsilon to avoid division by zero
+
+def get_random_start(x0, epsilon):
+    batch_size, c, h, w = x0.shape
+    r = torch.randn(batch_size, c * h * w, device=x0.device)
+    r = r / r.norm(dim=1, keepdim=True)
+    r = r.view_as(x0)
+    return x0 + 0.00001 * torch.tensor(epsilon, device=x0.device) * r
+
+
+def normalize_lp_norms(x, p=2):
+    norms = x.view(x.shape[0], -1).norm(p=p, dim=1)
+    return x / norms.view(-1, 1, 1, 1)
+
+
+def project(x, x0, epsilon):
+    delta = x - x0
+    sphere = epsilon * normalize_lp_norms(delta, p=2).abs()
+    sphere = sphere - sphere.min()
+    if not sphere.max() > 0 and not sphere.min() < 0:
+        return x0 + sphere
+    else:
+        return x0 + sphere / sphere.max()
+
+
+def optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations, random_start, criterion, epsilon):
+    model.eval()
+    x0 = torch.zeros(input_shape, device='cuda')
+    if random_start:
+        x = get_random_start(x0, epsilon)
+    else:
+        x = x0.clone()
+    x.requires_grad_(True)
+    for step in range(iterations):
+        activation = get_layer_output(model, x, layer)
+        loss = -activation[0, filter_idx].sum()  # maximally activates the filter as a whole
+        if criterion(loss.item()):
+            break  # Stop if the criterion is met
+        loss.backward()
+        with torch.no_grad():
+            gradients = normalize_gradient(x.grad)  # Normalize gradients
+            x.data = x.data + step_size * gradients
+            x.data = project(x.data, x0, epsilon)
+            x.data.clamp_(0, 1)  # Ensure values are in [0, 1] range
+        x.grad.zero_()
+    return x.detach(), -loss.item()
+
+
+def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.001, iterations=500,
+                      random_start=True, nb_start=1, l2_norm=True, max_val=1e10, eps=1e-5, epsilons=None):
+    if epsilons is None:
+        epsilons = torch.tensor([255.0]) / 255.0  # Default value as PyTorch tensor
+    else:
+        epsilons = torch.tensor(epsilons)  # Convert numpy array to PyTorch tensor
     model.eval()
     model = remove_padding(model, layer)
     receptive_field_size = calculate_receptive_field(model, layer)
@@ -620,42 +621,27 @@ def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), 
         raise ValueError("The target layer does not have an 'out_channels' attribute.")
     num_filters = min(num_filters, out_channels)
     filter_images = []
+    criterion = SingleMax(max_val, eps)
     for filter_idx in range(num_filters):
         best_image = None
         best_activation = float('-inf')
         for start in range(nb_start):
-            if random_start:
-                input_image = torch.rand(input_shape, requires_grad=True, device='cuda')
-            else:
-                input_image = torch.zeros(input_shape, requires_grad=True, device='cuda')
-                input_image.data.uniform_(-1e-5, 1e-4)
-            if l2_norm:
-                input_image.data = l2_normalize(input_image.data)
-            optimizer = optim.Adam([input_image], lr=step_size)
-            for step in range(iterations):
-                optimizer.zero_grad()
-                activation = get_layer_output(model, input_image, layer)
-                # loss = -activation[0, filter_idx, activation.shape[2] // 2, activation.shape[3] // 2]  # Center neuron
-                loss = -activation[0, filter_idx].sum() # maximally activates the filter as a whole
-                loss.backward()
-                input_image.grad = normalize_gradient(input_image.grad)
-                optimizer.step()
-                if l2_norm:
-                    input_image.data = l2_normalize(input_image.data)
-            final_activation = -loss.item()
-            if final_activation > best_activation:
-                best_activation = final_activation
-                best_image = input_image.detach()
+            optimized_image, activation = optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations,
+                                                          random_start, criterion, epsilons)
+            if activation > best_activation:
+                print(f"New best Receptive Field found in Reboot {start}")
+                best_activation = activation
+                best_image = optimized_image
         optimized_image = best_image.cpu().squeeze(0).permute(1, 2, 0)
         optimized_image = (optimized_image - optimized_image.min()) / (optimized_image.max() - optimized_image.min())
         filter_images.append(optimized_image)
     # Plot the filter visualizations in a grid
     grid_size = int(num_filters ** 0.5) + (1 if num_filters ** 0.5 % 1 > 0 else 0)
-    fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
+    fig, axes = plt.subplots(grid_size, grid_size, figsize=(20, 20))
     axes = axes.flatten()
     for i in range(num_filters):
         axes[i].imshow(filter_images[i].numpy())
-        axes[i].set_title(f'Filter {i+1}')
+        axes[i].set_title(f'Filter {i + 1}')
         axes[i].axis('off')
     # Turn off unused subplots
     for j in range(num_filters, len(axes)):

@@ -3,6 +3,10 @@ import torch
 from torch import nn, optim
 import torch.nn.functional as F
 from hebb import HebbianConv2d
+from hebb_depthwise import HebbianDepthConv2d
+
+# from hebb_abs import HebbianConv2d
+# from hebb_abs_depthwise import HebbianDepthConv2d
 import wandb
 
 def get_partial_model(model, target_layer):
@@ -13,24 +17,26 @@ def get_partial_model(model, target_layer):
             break
     return torch.nn.Sequential(*layers)
 
+
 def calculate_receptive_field(model, target_layer):
-    current_rf = 1  # Start with a receptive field of 1x1
-    current_stride = 1  # Start with stride 1
-    # Iterate through layers until we reach the target layer
+    current_rf = 1
+    current_stride = 1
+
     for layer in model.children():
-        # Assuming your custom Hebbian layers have kernel_size and stride attributes
-        if isinstance(layer, HebbianConv2d):  # Process only the SoftHebbConv2d layers
-            kernel_size = layer.kernel_size[0]  # Assuming square kernels, take the first value of the pair
-            stride = layer.stride[0]  # Assuming square strides, take the first value of the pair
+        if isinstance(layer, (nn.Conv2d, HebbianConv2d, HebbianDepthConv2d)):
+            kernel_size = layer.kernel_size[0] if isinstance(layer.kernel_size, tuple) else layer.kernel_size
+            stride = layer.stride[0] if isinstance(layer.stride, tuple) else layer.stride
             current_rf += (kernel_size - 1) * current_stride
             current_stride *= stride
-        elif isinstance(layer, nn.MaxPool2d) or isinstance(layer, nn.AvgPool2d):  # Process pooling layers
-            kernel_size = layer.kernel_size
-            stride = layer.stride
-            current_rf = current_rf + (kernel_size - 1) * current_stride
-            current_stride *= stride  # Multiply by the pooling layer's stride
-        if layer == target_layer:  # Stop when we reach the target layer
+        elif isinstance(layer, (nn.MaxPool2d, nn.AvgPool2d)):
+            kernel_size = layer.kernel_size if isinstance(layer.kernel_size, int) else layer.kernel_size[0]
+            stride = layer.stride if isinstance(layer.stride, int) else layer.stride[0]
+            current_rf += (kernel_size - 1) * current_stride
+            current_stride *= stride
+
+        if layer == target_layer:
             break
+
     return current_rf
 
 def get_layer_output(model, x, target_layer):
@@ -48,7 +54,7 @@ def remove_padding(model, target_layer):
     for layer in model.children():
         if isinstance(layer, nn.Conv2d):
             layer.padding = (0, 0)
-        elif isinstance(layer, HebbianConv2d):
+        elif isinstance(layer, (HebbianConv2d, HebbianDepthConv2d)):
             # For custom SoftHebbConv2d layers, we need to modify the padding directly
             layer.padding = 0
         if isinstance(layer, (nn.MaxPool2d, nn.AvgPool2d)):

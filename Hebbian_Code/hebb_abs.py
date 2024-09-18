@@ -219,51 +219,6 @@ class HebbianConv2d(nn.Module):
         cosine_sim = conv_output / x_norm
         return cosine_sim
 
-    def lateral_inhibition_within_filter(self, y_normalized):
-        # y_normalized shape is [batch_size, out_channels, height, width]
-        batch_size, out_channels, height, width = y_normalized.shape
-        hw = height * width
-        y_reshaped = y_normalized.view(batch_size, out_channels, hw).transpose(1,2)  # Shape: [batch_size, hw, out_channels]
-        # Compute coactivation within each filter
-        coactivation = torch.bmm(y_reshaped.transpose(1, 2),
-                                 y_reshaped)  # Shape: [batch_size, out_channels, out_channels]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_filter'):
-            self.lateral_weights_filter = torch.zeros(out_channels, out_channels, device=y_normalized.device)
-        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_filter)
-        self.lateral_weights_filter -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.bmm(y_reshaped, self.lateral_weights_filter.unsqueeze(0).expand(batch_size, -1, -1))
-        y_inhibited = F.relu(y_reshaped - inhibition)
-        return y_inhibited.transpose(1, 2).view(batch_size, out_channels, height, width)
-
-    def lateral_inhibition_same_patch(self, y_normalized):
-        # y_normalized shape is [batch_size, out_channels, height, width]
-        batch_size, out_channels, height, width = y_normalized.shape
-        hw = height * width
-        y_reshaped = y_normalized.view(batch_size, out_channels, hw)  # Shape: [batch_size, out_channels, hw]
-        # Compute coactivation for neurons looking at the same patch
-        coactivation = torch.bmm(y_reshaped,
-                                 y_reshaped.transpose(1, 2))  # Shape: [batch_size, out_channels, out_channels]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_patch'):
-            self.lateral_weights_patch = torch.zeros(out_channels, out_channels, device=y_normalized.device)
-        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_patch)
-        self.lateral_weights_patch -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.bmm(self.lateral_weights_patch.unsqueeze(0).expand(batch_size, -1, -1), y_reshaped)
-        y_inhibited = F.relu(y_reshaped - inhibition)
-        return y_inhibited.view(batch_size, out_channels, height, width)
-
-    def combined_lateral_inhibition(self, y_normalized):
-        # Apply inhibition within filter
-        y_inhibited_filter = self.lateral_inhibition_within_filter(y_normalized)
-        # Apply inhibition for the same patch
-        y_inhibited_patch = self.lateral_inhibition_same_patch(y_normalized)
-        # Combine the inhibitions (you can adjust the weighting as needed)
-        y_inhibited = 0.5 * y_inhibited_filter + 0.5 * y_inhibited_patch
-        return y_inhibited
-
     def apply_surround_modulation(self, y):
         return F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)

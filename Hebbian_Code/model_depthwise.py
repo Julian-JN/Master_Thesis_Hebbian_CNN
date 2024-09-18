@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# from hebb import HebbianConv2d
+from hebb import HebbianConv2d
 # from hebb_ex_in import HebbianConv2d
 # from hebb_ffi import HebbianConv2d
-# from hebb_depthwise import HebbianDepthConv2d
+from hebb_depthwise import HebbianDepthConv2d
 
-from hebb_abs import HebbianConv2d
-from hebb_abs_depthwise import HebbianDepthConv2d
+# from hebb_abs import HebbianConv2d
+# from hebb_abs_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
 import numpy as np

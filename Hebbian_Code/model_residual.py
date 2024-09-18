@@ -45,29 +45,22 @@ class LongSkipConnection(nn.Module):
 class HebbianResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, hebb_params=None, t_invert=1., expansion_factor=6, act=1.):
         super(HebbianResidualBlock, self).__init__()
-
         if hebb_params is None:
             hebb_params = default_hebb_params
-
         # Calculate padding to maintain spatial dimensions
         # Doubt regarding when additional padding is required
         padding = (kernel_size - 1) // 2
         hidden_dim = in_channels * expansion_factor
-
         self.bn1 = nn.BatchNorm2d(in_channels, affine=False)
         self.conv1 = HebbianConv2d(in_channels, hidden_dim, kernel_size=1, stride=1, **hebb_params, t_invert=t_invert,
                                         padding=0)
-
         self.bn2 = nn.BatchNorm2d(hidden_dim, affine=False)
         self.conv2 = HebbianDepthConv2d(hidden_dim, hidden_dim, kernel_size, stride=1, **hebb_params,
                                         t_invert=t_invert, padding=padding)
-
         self.bn3 = nn.BatchNorm2d(hidden_dim, affine=False)
         self.conv3 = HebbianConv2d(hidden_dim, out_channels, kernel_size=1, stride=1, **hebb_params, t_invert=t_invert,
                                    padding=0)
-
         self.activ = Triangle(power=act)
-
         self.shortcut = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
             self.shortcut = nn.Sequential(

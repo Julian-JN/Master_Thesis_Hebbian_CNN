@@ -15,6 +15,7 @@ import seaborn as sns
 import wandb
 from visualizer import plot_ltp_ltd, plot_ltp_ltd_ex_in, print_weight_statistics, visualize_data_clusters
 import pandas as pd
+from receptive_fields import visualize_filters
 
 torch.manual_seed(0)
 
@@ -105,14 +106,14 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"OPT-ABS-Cos-BCM-Hard-Surround-Hard-HebbianCNN-Depthwise",
-        project='Clean-HebbianCNN', model=model)
+        f"RF-Hard-Cos-Mix",
+        project='RF-Abs-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -155,7 +156,7 @@ if __name__ == "__main__":
             inputs, _ = data
             inputs = inputs.to(device)
             # zero the parameter gradients
-            # unsup_optimizer.zero_grad()
+            unsup_optimizer.zero_grad()
             with torch.no_grad():
                 outputs = model(inputs)
             # Visualize changes before updating
@@ -170,13 +171,18 @@ if __name__ == "__main__":
             for layer in [model.conv1, model.conv2, model.conv3, model.conv_point2, model.conv_point3]:
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
-            # unsup_optimizer.step()
+            unsup_optimizer.step()
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
     model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
+
+    print("Visualizing Receptive fields")
+    visualize_filters(model, model.conv1, num_filters=25)
+    visualize_filters(model, model.conv2, num_filters=25)
+    visualize_filters(model, model.conv3, num_filters=25)
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier

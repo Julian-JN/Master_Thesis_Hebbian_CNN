@@ -18,6 +18,8 @@ import seaborn as sns
 import wandb
 import pandas as pd
 
+from receptive_fields import visualize_filters
+
 torch.manual_seed(0)
 
 def print_weight_statistics(layer, layer_name):
@@ -266,8 +268,8 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"BackPropagation-Init",
-        project='HebbianCNN', model=model)
+        f"BackPropagation",
+        project='RF-Abs-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -279,7 +281,7 @@ if __name__ == "__main__":
                                           whiten_lvl=None)
 
     print(f'Processing Training batches: {len(trn_set)}')
-    for epoch in range(5):
+    for epoch in range(3):
         print(f"Training Hebbian epoch {epoch}")
         model.train()
         running_loss = 0.0
@@ -317,6 +319,11 @@ if __name__ == "__main__":
             preds = torch.argmax(outputs, dim=1)
             train_preds.append(preds)
             train_labels.append(labels)
+
+        print("Visualizing Receptive fields")
+        visualize_filters(model, model.conv1, num_filters=25)
+        visualize_filters(model, model.conv2, num_filters=25)
+        visualize_filters(model, model.conv3, num_filters=25)
 
         print(f'Accuracy of the network on the train images: {100 * correct // total} %')
         print(f'[{epoch + 1}] loss: {running_loss / total:.3f}')
@@ -378,6 +385,11 @@ if __name__ == "__main__":
     print_weight_statistics(model.conv2, 'conv2')
     print_weight_statistics(model.conv3, 'conv3')
     # print_weight_statistics(model.conv_point2, 'conv3')
+
+    print("Visualizing Receptive fields")
+    visualize_filters(model, model.conv1, num_filters=25)
+    visualize_filters(model, model.conv2, num_filters=25)
+    visualize_filters(model, model.conv3, num_filters=25)
 
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)

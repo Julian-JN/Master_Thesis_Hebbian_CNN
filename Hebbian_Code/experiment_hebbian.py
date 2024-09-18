@@ -5,7 +5,6 @@ import torch.optim.lr_scheduler as sched
 
 import data
 from model_hebb import Net_Hebbian
-import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 
@@ -14,11 +13,7 @@ from torchmetrics import Accuracy, Precision, Recall, F1Score, ConfusionMatrix
 import seaborn as sns
 import wandb
 from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clusters
-import pandas as pd
-
-# TODO:
-
-    # SOFTHEBB NOT QUITE EXACT RESULTS. CHECK
+from receptive_fields import visualize_filters
 
 torch.manual_seed(0)
 
@@ -108,13 +103,13 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'thresh', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Hebbian(hebb_params=hebb_param, version="hardhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"Adp-Nocomp-No_Opt",project='Clean-HebbianCNN', model=model)
+        f"RF-BCM",project='RF-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -177,6 +172,11 @@ if __name__ == "__main__":
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
+
+    print("Visualizing Receptive fields")
+    visualize_filters(model, model.conv1, num_filters=25)
+    visualize_filters(model, model.conv2, num_filters=25)
+    visualize_filters(model, model.conv3, num_filters=25)
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier

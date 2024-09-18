@@ -275,7 +275,7 @@ class HebbianConv2d(nn.Module):
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
         y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.cosine(x, w)
+        y = self.cosine(x, w)
         return x,y, w
 
     def forward(self, x):
@@ -371,7 +371,7 @@ class HebbianConv2d(nn.Module):
         threshold = self.compute_adaptive_threshold(similarities)
         winners = (similarities > threshold).float()
         y_winners = winners * similarities
-        # y_winners = y_winners * self.apply_competition(y_winners)
+        y_winners = y_winners * self.apply_competition(y_winners)
         yx = self.compute_yx(x, y_winners)
         y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
         update = yx - y_sum * weight

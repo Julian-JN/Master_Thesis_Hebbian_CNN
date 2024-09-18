@@ -20,22 +20,6 @@ from torch.nn.modules.utils import _pair
 from torch.optim.lr_scheduler import StepLR
 import data
 
-from torchvision.transforms import Normalize
-from tqdm import tqdm
-
-# import torchvision
-# import eagerpy as ep
-# import foolbox
-# from foolbox import PyTorchModel
-# from foolbox.attacks.base import T, get_criterion, raise_if_kwargs
-# from foolbox.attacks.gradient_descent_base import BaseGradientDescent, normalize_lp_norms, uniform_l2_n_balls
-# from foolbox.criteria import Misclassification, TargetedMisclassification
-# from foolbox.devutils import flatten
-# from foolbox.distances import l2
-# from foolbox.models.base import Model
-# from foolbox.types import Bounds
-# from typing import Union, Any
-
 torch.manual_seed(0)
 
 
@@ -362,71 +346,6 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
         raise ValueError("dim must be either 2 or 3")
     plt.show()
 
-# class ChooseNeuronFlat(torch.nn.Module):
-#     def __init__(self, idx):
-#         super(ChooseNeuronFlat, self).__init__()
-#         self.idx = idx
-#
-#     def forward(self, x):
-#         # return x[:, self.idx].view(-1)
-#         selected_channel = x[:, self.idx, :, :]
-#         # Flatten to a 1D tensor
-#         return selected_channel.view(-1)
-
-
-# class SingleMax:
-#     def __init__(self, max_val: float, eps: float):
-#         super().__init__()
-#         self.max_val: float = max_val
-#         self.eps: float = eps
-#
-#     def __call__(self, outputs):
-#         if self.max_val is None:
-#             is_adv = outputs > 0 | outputs <= 0
-#         else:
-#             is_adv = (self.max_val - outputs) < self.eps
-#         return is_adv
-
-class L2ProjGradientDescent:
-    def __init__(self, steps, rel_stepsize, random_start=True):
-        self.steps = steps
-        self.rel_stepsize = rel_stepsize
-        self.random_start = random_start
-
-    def __call__(self, model, inputs, criterion, epsilon):
-        if self.random_start:
-            x = inputs + torch.randn_like(inputs) * 0.001 * epsilon
-            x = torch.clamp(x, 0, 1)
-        else:
-            x = inputs.clone()
-        x.requires_grad_(True)
-        for _ in range(self.steps):
-            model.zero_grad()
-            outputs = model(x)
-            loss = criterion(x, outputs).sum()  # Negative for ascent
-            loss.backward()
-            with torch.no_grad():
-                gradients = x.grad
-                print(gradients)
-                stepsize = self.rel_stepsize * epsilon
-                x += stepsize * gradients.sign()
-                x = torch.clamp(x, 0, 1)  # Project to valid image range
-            x.grad.zero_()
-        return x.detach()
-
-def attack_model(model, data, epsilons, iterations, step_size, criterion, device, random_start=True, nb_start=1):
-    attack = L2ProjGradientDescent(steps=iterations, rel_stepsize=step_size, random_start=random_start)
-    epsilon = epsilons[0] if isinstance(epsilons, (list, np.ndarray)) else epsilons
-    best_input = None
-    best_activation = float('-inf')
-    for _ in range(nb_start):
-        optimized_input = attack(model, data, criterion, epsilon)
-        activation = model(optimized_input).max().item()
-        if activation > best_activation:
-            best_input = optimized_input
-            best_activation = activation
-    return best_input
-
 def get_partial_model(model, target_layer):
     layers = []
     for layer in model.children():
@@ -435,71 +354,9 @@ def get_partial_model(model, target_layer):
             break
     return torch.nn.Sequential(*layers)
 
-# def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.1, iterations=500, random_start=True, nb_start=1):
-#     model.eval()
-#     partial_model = get_partial_model(model, layer)
-#     partial_model = remove_padding(partial_model, layer)
-#     receptive_field_size = calculate_receptive_field(partial_model, layer)
-#     print(f"Receptive field size: {receptive_field_size}x{receptive_field_size}")
-#     input_shape = (1, 3, receptive_field_size, receptive_field_size)
-#
-#     if hasattr(layer, 'out_channels'):
-#         out_channels = layer.out_channels
-#     else:
-#         raise ValueError("The target layer does not have an 'out_channels' attribute.")
-#
-#     num_filters = min(num_filters, out_channels)
-#     filter_images = []
-#
-#     for filter_idx in range(num_filters):
-#         choose_neuron = ChooseNeuronFlat(filter_idx)
-#         criterion = SingleMax(max_val=1e10, eps=1e-05)
-#
-#         data = torch.zeros(input_shape, device='cuda')
-#         epsilons = np.array([255]) / 255  # Matching the original code's epsilon definition
-#
-#         optimized_input = attack_model(
-#             model=torch.nn.Sequential(partial_model, choose_neuron).eval(),
-#             data=data,
-#             epsilons=epsilons,
-#             iterations=iterations,
-#             step_size=step_size,
-#             criterion=criterion,
-#             device='cuda',
-#             random_start=random_start,
-#             nb_start=nb_start)
-#
-#         optimized_image = optimized_input.cpu().squeeze(0).permute(1, 2, 0)
-#         optimized_image = (optimized_image - optimized_image.min()) / (optimized_image.max() - optimized_image.min())
-#         filter_images.append(optimized_image)
-#
-#     # Plot the filter visualizations in a grid
-#     grid_size = int(num_filters ** 0.5) + (1 if num_filters ** 0.5 % 1 > 0 else 0)
-#     fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
-#     axes = axes.flatten()
-#     for i in range(num_filters):
-#         axes[i].imshow(filter_images[i].numpy())
-#         axes[i].set_title(f'Filter {i + 1}')
-#         axes[i].axis('off')
-#     # Turn off unused subplots
-#     for j in range(num_filters, len(axes)):
-#         axes[j].axis('off')
-#     plt.tight_layout()
-#     plt.show()
-
-def l2_normalize(x, epsilon=1.0):
-    """Project x onto the L2 sphere with radius epsilon."""
-    norm = torch.norm(x)
-    return x * (epsilon / norm)
-
 def calculate_receptive_field(model, target_layer):
-    """
-    Calculate the receptive field for a specific target Hebbian layer in the model.
-    This will account for custom Hebbian layers similar to Conv2d.
-    """
     current_rf = 1  # Start with a receptive field of 1x1
     current_stride = 1  # Start with stride 1
-    current_kernel = 1  # Identity kernel to begin
     # Iterate through layers until we reach the target layer
     for layer in model.children():
         # Assuming your custom Hebbian layers have kernel_size and stride attributes
@@ -511,13 +368,11 @@ def calculate_receptive_field(model, target_layer):
         elif isinstance(layer, nn.MaxPool2d) or isinstance(layer, nn.AvgPool2d):  # Process pooling layers
             kernel_size = layer.kernel_size
             stride = layer.stride
-            # Update receptive field for the pooling layer
             current_rf = current_rf + (kernel_size - 1) * current_stride
             current_stride *= stride  # Multiply by the pooling layer's stride
         if layer == target_layer:  # Stop when we reach the target layer
             break
     return current_rf
-
 
 def get_layer_output(model, x, target_layer):
     """
@@ -529,18 +384,32 @@ def get_layer_output(model, x, target_layer):
             return x  # Return the output of the target Hebbian layer
     raise ValueError(f"Target layer {target_layer} not found in the model.")
 
-
 def remove_padding(model, target_layer):
     """Remove padding from layers before the target layer."""
     for layer in model.children():
-        if isinstance(layer, (nn.Conv2d, SoftHebbConv2d)):
+        if isinstance(layer, nn.Conv2d):
             layer.padding = (0, 0)
+        elif isinstance(layer, SoftHebbConv2d):
+            # For custom SoftHebbConv2d layers, we need to modify the padding directly
+            layer.F_padding = (0, 0, 0, 0)  # Set padding to zero
         if isinstance(layer, (nn.MaxPool2d, nn.AvgPool2d)):
             layer.padding = (0, 0)
         if layer == target_layer:
             break
     return model
 
+def gaussian_blur(x, kernel_size=5, sigma=1.0):
+    channels = x.shape[1]
+    kernel = torch.tensor([
+        [1., 4., 6., 4., 1.],
+        [4., 16., 24., 16., 4.],
+        [6., 24., 36., 24., 6.],
+        [4., 16., 24., 16., 4.],
+        [1., 4., 6., 4., 1.]
+    ], device=x.device).unsqueeze(0).unsqueeze(0) / 256.0
+    kernel = kernel.repeat(channels, 1, 1, 1)
+    padding = kernel_size // 2
+    return F.conv2d(x, kernel, padding=padding, groups=channels)
 
 class SingleMax:
     def __init__(self, max_val: float, eps: float):
@@ -553,61 +422,48 @@ class SingleMax:
         else:
             return (self.max_val - outputs) < self.eps
 
-def normalize_gradient(grad):
-    """Normalize gradient to have L2 norm of 1."""
-    norm = torch.norm(grad.view(grad.shape[0], -1), p=2, dim=1)
-    return grad / (norm.view(-1, 1, 1, 1) + 1e-10)  # Add small epsilon to avoid division by zero
+class L2ProjGradientDescent:
+    def __init__(self, steps, random_start=True, rel_stepsize=0.1):
+        self.steps = steps
+        self.random_start = random_start
+        self.rel_stepsize = rel_stepsize
 
-def get_random_start(x0, epsilon):
-    batch_size, c, h, w = x0.shape
-    r = torch.randn(batch_size, c * h * w, device=x0.device)
-    r = r / r.norm(dim=1, keepdim=True)
-    r = r.view_as(x0)
-    return x0 + 0.00001 * epsilon.clone().detach().to(x0.device) * r
+    def get_random_start(self, x0, epsilon):
+        batch_size, c, h, w = x0.shape
+        r = torch.randn(batch_size, c * h * w, device=x0.device)
+        r = r / r.norm(dim=1, keepdim=True)
+        r = r.view_as(x0)
+        return x0 + 0.00001 * epsilon * r
 
+    def normalize_gradient(self, grad):
+        return grad / (grad.view(grad.shape[0], -1).norm(dim=1).view(-1, 1, 1, 1) + 1e-8)
 
-def normalize_lp_norms(x, p=2):
-    norms = x.view(x.shape[0], -1).norm(p=p, dim=1)
-    return x / norms.view(-1, 1, 1, 1).clamp(min=1e-12)
+    def project(self, x, x0, epsilon):
+        delta = x - x0
+        delta = epsilon * delta / delta.view(delta.shape[0], -1).norm(dim=1).view(-1, 1, 1, 1).clamp(min=1e-12)
+        return x0 + delta
 
-
-def project(x, x0, epsilon):
-    epsilon = epsilon.clone().detach().to(x.device)
-    delta = x - x0
-    sphere = epsilon * normalize_lp_norms(delta, p=2).abs()
-    sphere = sphere - sphere.min()
-    if not sphere.max() > 0 and not sphere.min() < 0:
-        return x0 + sphere
-    else:
-        return x0 + sphere / sphere.max()
-
-
-def optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations, random_start, criterion, epsilon):
-    model.eval()
-    x0 = torch.zeros(input_shape, device='cuda')
-    epsilon = epsilon.clone().detach().to(x0.device)
-    if random_start:
-        x = get_random_start(x0, epsilon)
-    else:
+    def run(self, model, x0, target_layer, filter_idx, epsilon, criterion):
         x = x0.clone()
-    x.requires_grad_(True)
-    for step in range(iterations):
-        activation = get_layer_output(model, x, layer)
-        loss = -activation[0, filter_idx].sum()  # maximally activates the filter as a whole
-        if criterion(loss.item()):
-            break  # Stop if the criterion is met
-        loss.backward()
-        with torch.no_grad():
-            gradients = normalize_gradient(x.grad)  # Normalize gradients
-            x.data = x.data + step_size * gradients
-            x.data = project(x.data, x0, epsilon)
-            x.data.clamp_(0, 1)  # Ensure values are in [0, 1] range
-        x.grad.zero_()
-    return x.detach(), -loss.item()
+        if self.random_start:
+            x = self.get_random_start(x0, epsilon)
+        for _ in range(self.steps):
+            x.requires_grad_(True)
+            x_smooth = gaussian_blur(x, sigma=1.0)  # Apply Gaussian smoothing
+            activation = get_layer_output(model, x, target_layer)
+            loss = -activation[0, filter_idx].sum()
+            if criterion(loss.item()):
+                break
+            grad = torch.autograd.grad(loss, x)[0]
+            grad = self.normalize_gradient(grad)
+            with torch.no_grad():
+                x = x - self.rel_stepsize * epsilon * grad
+                x = self.project(x, x0, epsilon)
+                x.clamp_(0, 1)
+        return x
 
-
-def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.01, iterations=1000,
-                      random_start=True, nb_start=5, l2_norm=True, max_val=1e10, eps=1e-5, epsilons=None):
+def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), step_size=0.001, iterations=500,
+                      random_start=True, nb_start=1, l2_norm=True, max_val=1e10, eps=1e-05, epsilons=None):
     if epsilons is None:
         epsilons = torch.tensor([255.0], device='cuda') / 255.0
     else:
@@ -624,12 +480,15 @@ def visualize_filters(model, layer, num_filters=25, input_shape=(1, 3, 32, 32), 
     num_filters = min(num_filters, out_channels)
     filter_images = []
     criterion = SingleMax(max_val, eps)
+    pgd = L2ProjGradientDescent(steps=iterations, random_start=random_start, rel_stepsize=step_size)
+
     for filter_idx in range(num_filters):
         best_image = None
         best_activation = float('-inf')
         for start in range(nb_start):
-            optimized_image, activation = optimize_filter(model, layer, filter_idx, input_shape, step_size, iterations,
-                                                          random_start, criterion, epsilons)
+            x0 = torch.zeros(input_shape, device='cuda', requires_grad=True)
+            optimized_image = pgd.run(model, x0, layer, filter_idx, epsilons, criterion)
+            activation = -get_layer_output(model, optimized_image, layer)[0, filter_idx].sum().item()
             if activation > best_activation:
                 print(f"New best Receptive Field found for filter {filter_idx} in Reboot {start}")
                 best_activation = activation

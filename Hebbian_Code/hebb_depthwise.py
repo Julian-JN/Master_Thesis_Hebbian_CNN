@@ -168,10 +168,10 @@ class HebbianDepthConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        conv_output = symmetric_pad(x, self.padding)
-        conv_output = F.conv2d(conv_output, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
+        # conv_output = symmetric_pad(x, self.padding)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
-        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
                                  self.groups)
         x_norm = torch.sqrt(x_squared_sum + 1e-8)
         cosine_sim = conv_output / x_norm
@@ -192,6 +192,7 @@ class HebbianDepthConv2d(nn.Module):
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
 
     def compute_activation(self, x):
+        x = symmetric_pad(x, self.padding)
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
@@ -247,13 +248,21 @@ class HebbianDepthConv2d(nn.Module):
         return yx - yu * weight
 
     def update_bcm(self, x, y, weight):
+        batch_size, out_channels, height, width = y.shape
         y_wta = y * self.compute_wta_mask(y)
-        y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
-        self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
-        y_minus_theta = y_wta - self.theta.view(1, -1, 1, 1)
+        # Compute squared activation for each spatial location and channel
+        y_squared = y_wta.pow(2)
+        # Reshape theta to match spatial dimensions
+        theta_spatial = self.theta.view(1, -1, 1, 1).expand(1, out_channels, height, width)
+        # Update theta for each spatial location
+        theta_update = self.theta_decay * (y_squared - theta_spatial)
+        self.theta.data += theta_update.mean(dim=(0, 2, 3))
+        # Compute BCM updates for each spatial location
+        y_minus_theta = y_wta - theta_spatial
         bcm_factor = y_wta * y_minus_theta
         yx = self.compute_yx(x, bcm_factor)
-        return yx.view(weight.shape)
+        update = yx.view(weight.shape)
+        return update
 
     def update_temporal_competition(self, x, y, weight):
         batch_size, out_channels, height_out, width_out = y.shape

@@ -210,59 +210,14 @@ class HebbianConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        conv_output = symmetric_pad(x, self.padding)
-        conv_output = F.conv2d(conv_output, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
+        # conv_output = symmetric_pad(x, self.padding)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
-        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
                                  self.groups)
         x_norm = torch.sqrt(x_squared_sum + 1e-8)
         cosine_sim = conv_output / x_norm
         return cosine_sim
-
-    def lateral_inhibition_within_filter(self, y_normalized):
-        # y_normalized shape is [batch_size, out_channels, height, width]
-        batch_size, out_channels, height, width = y_normalized.shape
-        hw = height * width
-        y_reshaped = y_normalized.view(batch_size, out_channels, hw).transpose(1,2)  # Shape: [batch_size, hw, out_channels]
-        # Compute coactivation within each filter
-        coactivation = torch.bmm(y_reshaped.transpose(1, 2),
-                                 y_reshaped)  # Shape: [batch_size, out_channels, out_channels]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_filter'):
-            self.lateral_weights_filter = torch.zeros(out_channels, out_channels, device=y_normalized.device)
-        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_filter)
-        self.lateral_weights_filter -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.bmm(y_reshaped, self.lateral_weights_filter.unsqueeze(0).expand(batch_size, -1, -1))
-        y_inhibited = y_reshaped - inhibition
-        return y_inhibited.transpose(1, 2).view(batch_size, out_channels, height, width)
-
-    def lateral_inhibition_same_patch(self, y_normalized):
-        # y_normalized shape is [batch_size, out_channels, height, width]
-        batch_size, out_channels, height, width = y_normalized.shape
-        hw = height * width
-        y_reshaped = y_normalized.view(batch_size, out_channels, hw)  # Shape: [batch_size, out_channels, hw]
-        # Compute coactivation for neurons looking at the same patch
-        coactivation = torch.bmm(y_reshaped,
-                                 y_reshaped.transpose(1, 2))  # Shape: [batch_size, out_channels, out_channels]
-        # Update lateral weights using Anti-Hebbian learning
-        if not hasattr(self, 'lateral_weights_patch'):
-            self.lateral_weights_patch = torch.zeros(out_channels, out_channels, device=y_normalized.device)
-        lateral_update = self.lateral_learning_rate * (coactivation.mean(dim=0) - self.lateral_weights_patch)
-        self.lateral_weights_patch -= lateral_update  # Anti-Hebbian update
-        # Apply inhibition
-        inhibition = torch.bmm(self.lateral_weights_patch.unsqueeze(0).expand(batch_size, -1, -1), y_reshaped)
-        y_inhibited = y_reshaped - inhibition
-        return y_inhibited.view(batch_size, out_channels, height, width)
-
-    def combined_lateral_inhibition(self, y_normalized):
-        # Apply inhibition within filter
-        y_inhibited_filter = self.lateral_inhibition_within_filter(y_normalized)
-        # Apply inhibition for the same patch
-        y_inhibited_patch = self.lateral_inhibition_same_patch(y_normalized)
-        # Combine the inhibitions (you can adjust the weighting as needed)
-        y_inhibited = 0.5 * y_inhibited_filter + 0.5 * y_inhibited_patch
-        return y_inhibited
 
     def apply_surround_modulation(self, y):
         return F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
@@ -273,7 +228,7 @@ class HebbianConv2d(nn.Module):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
-        y = self.act(self.apply_weights(x, w))
+        # y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         y = self.cosine(x, w)
         return x,y, w
@@ -282,8 +237,8 @@ class HebbianConv2d(nn.Module):
         x,y, w = self.compute_activation(x)
         # if self.lateral_inhibition_mode == "combined":
         #     y = self.combined_lateral_inhibition(y)
-        # if self.kernel != 1:
-        #     y = self.apply_surround_modulation(y)
+        if self.kernel != 1:
+            y = self.apply_surround_modulation(y)
         if self.training:
             # self.update_average_activity(y)
             # self.synaptic_scaling()
@@ -344,7 +299,6 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_bcm(self, x, y, weight):
-        # BCM learning rule with WTA mask (remove if not needed)
         y_wta = y * self.compute_wta_mask(y)
         y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
         self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
@@ -358,7 +312,7 @@ class HebbianConv2d(nn.Module):
         self.update_activation_history(y)
         temporal_winners = self.compute_temporal_winners(y)
         y_winners = temporal_winners * y
-        y_winners = y_winners * self.apply_competition(y_winners)
+        # y_winners = y_winners * self.apply_competition(y_winners)
         yx = self.compute_yx(x, y_winners)
         y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
         update = yx - y_sum * weight
@@ -389,7 +343,8 @@ class HebbianConv2d(nn.Module):
         batch_size, out_channels, height_out, width_out = y.shape
         history_spatial = self.activation_history.view(-1, out_channels, height_out, width_out)
         median_activations = torch.median(history_spatial, dim=0)[0]
-        temporal_threshold = torch.mean(median_activations, dim=(1, 2), keepdim=True)
+        # Compute threshold for each spatial location
+        temporal_threshold = torch.mean(median_activations, dim=0, keepdim=True)
         return (y > temporal_threshold).float()
 
     def compute_adaptive_threshold(self, similarities):

@@ -210,8 +210,8 @@ class HebbianConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        conv_output = symmetric_pad(x, self.padding)
-        conv_output = F.conv2d(conv_output, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
+        # conv_output = symmetric_pad(x, self.padding)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
         x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
                                  self.groups)
@@ -224,6 +224,7 @@ class HebbianConv2d(nn.Module):
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
 
     def compute_activation(self, x):
+        x = symmetric_pad(x, self.padding)
         w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)

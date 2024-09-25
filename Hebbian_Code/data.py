@@ -179,23 +179,23 @@ def get_data(dataset='cifar10', root='datasets', batch_size=32, num_workers=0, w
                 T.ToTensor(),
                 ZCATransformation(zca),
             ])
-        temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-        # Get a batch for visualization
-        original_batch, _ = next(iter(temp_loader))
-        whitened_batch = zca.transform(original_batch)
-        print("\nVisualization of ZCA effect:")
-        visualize_zca_effect(original_batch, whitened_batch)
-        print("\nCovariance check:")
-        print("Before whitening:")
-        check_covariance(original_batch)
-        print("\nAfter whitening:")
-        check_covariance(whitened_batch)
-
-        print("\nNormalization check:")
-        print("Before whitening:")
-        check_normalization(original_batch)
-        print("\nAfter whitening:")
-        check_normalization(whitened_batch)
+        # temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        # # Get a batch for visualization
+        # original_batch, _ = next(iter(temp_loader))
+        # whitened_batch = zca.transform(original_batch)
+        # print("\nVisualization of ZCA effect:")
+        # visualize_zca_effect(original_batch, whitened_batch)
+        # print("\nCovariance check:")
+        # print("Before whitening:")
+        # check_covariance(original_batch)
+        # print("\nAfter whitening:")
+        # check_covariance(whitened_batch)
+        #
+        # print("\nNormalization check:")
+        # print("Before whitening:")
+        # check_normalization(original_batch)
+        # print("\nAfter whitening:")
+        # check_normalization(whitened_batch)
 
         # Now apply the full transform including ZCA to the datasets
 

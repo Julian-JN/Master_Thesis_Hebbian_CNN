@@ -15,6 +15,7 @@ import seaborn as sns
 import wandb
 from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clusters
 import pandas as pd
+from receptive_fields_residual import visualize_filters
 
 torch.manual_seed(0)
 
@@ -107,13 +108,13 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Depthwise_Residual(hebb_params=hebb_param)
     model.to(device)
 
     wandb_logger = Logger(
-        f"Soft-No_Opt-Residual-Hebbian-CNN", project='Clean-HebbianCNN', model=model)
+        f"Residual_SoftHebb-Surround/HardWTA/Cos-Instar", project='Final-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -136,7 +137,7 @@ if __name__ == "__main__":
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
-                                          whiten_lvl=None)
+                                          whiten_lvl=1e-3)
 
     print(f'Processing Training batches: {len(trn_set)}')
     # Unsupervised training with SoftHebb
@@ -158,13 +159,12 @@ if __name__ == "__main__":
                 plot_ltp_ltd(model.res1.conv1, 'res1.conv1', num_filters=10, detailed_mode=True)
                 plot_ltp_ltd(model.res1.conv2, 'res1.conv2', num_filters=10, detailed_mode=True)
                 plot_ltp_ltd(model.res1.conv3, 'res1.conv3', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd(model.res2.conv1, 'res1.conv1', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd(model.res2.conv2, 'res1.conv2', num_filters=10, detailed_mode=True)
-                plot_ltp_ltd(model.res2.conv3, 'res1.conv3', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv1, 'res2.conv1', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv2, 'res2.conv2', num_filters=10, detailed_mode=True)
+                plot_ltp_ltd(model.res2.conv3, 'res2.conv3', num_filters=10, detailed_mode=True)
                 model.visualize_filters('conv1')
-                model.visualize_filters('res1.conv1')
                 model.visualize_filters('res1.conv2')
-                model.visualize_filters('res1.conv3')
+                model.visualize_filters('res2.conv2')
 
             layers = hebbian_layers = [model.conv1,model.res1,model.res2]
             for layer in layers:
@@ -175,23 +175,17 @@ if __name__ == "__main__":
                         if hasattr(sublayer, 'local_update'):
                             sublayer.local_update()
             # optimize
-            # unsup_optimizer.step()
+            unsup_optimizer.step()
             # unsup_lr_scheduler.step()
 
     print("Visualizing Filters")
-    model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
-    model.visualize_filters('res1.conv1', f'results/{"demo"}/demo_res1_conv1_filters_epoch_{1}.png')
+    # model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
+    # model.visualize_filters('res1.conv1', f'results/{"demo"}/demo_res1_conv1_filters_epoch_{1}.png')
     model.visualize_filters('res1.conv2', f'results/{"demo"}/demo_res1_conv2_filters_epoch_{1}.png')
-    model.visualize_filters('res1.conv3', f'results/{"demo"}/demo_res1_conv3_filters_epoch_{1}.png')
-    model.visualize_filters('res2.conv1', f'results/{"demo"}/demo_res2_conv1_filters_epoch_{1}.png')
+    # model.visualize_filters('res1.conv3', f'results/{"demo"}/demo_res1_conv3_filters_epoch_{1}.png')
+    # model.visualize_filters('res2.conv1', f'results/{"demo"}/demo_res2_conv1_filters_epoch_{1}.png')
     model.visualize_filters('res2.conv2', f'results/{"demo"}/demo_res2_conv2_filters_epoch_{1}.png')
-    model.visualize_filters('res2.conv3', f'results/{"demo"}/demo_res2_conv3_filters_epoch_{1}.png')
-
-    print("Weight statistics")
-    print_weight_statistics(model.conv1, 'conv1')
-    print_weight_statistics(model.res1.conv2, 'res1.conv2')
-    print_weight_statistics(model.res2.conv2, 'res2.conv2')
-
+    # model.visualize_filters('res2.conv3', f'results/{"demo"}/demo_res2_conv3_filters_epoch_{1}.png')
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
     unsup_optimizer.zero_grad()
@@ -199,13 +193,14 @@ if __name__ == "__main__":
     model.res1.requires_grad = False
     model.res2.requires_grad = False
     model.conv1.eval()
+    model.bn1.eval()
     model.res1.eval()
     model.res2.eval()
-    model.bn1.eval()
+
     print("Visualizing Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     print("Training Classifier")
-    for epoch in range(50):
+    for epoch in range(5):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0
@@ -283,3 +278,7 @@ if __name__ == "__main__":
         sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
         logger.log({"test_confusion_matrix": wandb.Image(f)})
         plt.close(f)
+
+    visualize_filters(model, model.conv1)
+    visualize_filters(model, model.res1.conv2)
+    visualize_filters(model, model.res2.conv2)

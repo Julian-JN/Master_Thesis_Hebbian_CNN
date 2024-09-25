@@ -112,8 +112,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"RF-Hard-Cos-Mix",
-        project='RF-Abs-HebbianCNN', model=model)
+        f"Depthwise_HardHebb-Surround/HardWTA/Cos-Instar",project='Final-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -179,10 +178,6 @@ if __name__ == "__main__":
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
     model.visualize_filters('conv_point2', f'results/{"demo"}/demo_conv_point2_filters_epoch_{1}.png')
 
-    print("Visualizing Receptive fields")
-    visualize_filters(model, model.conv1, num_filters=25)
-    visualize_filters(model, model.conv2, num_filters=25)
-    visualize_filters(model, model.conv3, num_filters=25)
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
@@ -199,7 +194,6 @@ if __name__ == "__main__":
     model.bn2.eval()
     model.bn3.eval()
     # model.bn4.eval()
-
     model.conv_point2.requires_grad = False
     model.conv_point3.requires_grad = False
     # model.conv_point4.requires_grad = False
@@ -213,7 +207,7 @@ if __name__ == "__main__":
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     # Train classifier with backpropagation
     print("Training Classifier")
-    for epoch in range(50):
+    for epoch in range(5):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0
@@ -290,3 +284,11 @@ if __name__ == "__main__":
         sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
         logger.log({"test_confusion_matrix": wandb.Image(f)})
         plt.close(f)
+
+    print("Visualizing Receptive fields")
+    visualize_filters(model, model.conv1, num_filters=25)
+    visualize_filters(model, model.conv2, num_filters=25)
+    visualize_filters(model, model.conv3, num_filters=25)
+
+    visualize_filters(model, model.conv_point2, num_filters=25)
+    visualize_filters(model, model.conv_point3, num_filters=25)

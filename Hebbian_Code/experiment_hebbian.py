@@ -103,36 +103,36 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'soft', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Hebbian(hebb_params=hebb_param, version="softhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"RF-Soft",project='RF-HebbianCNN', model=model)
+        f"SoftHebb-Surround/HardWTA/Cos-Instar",project='Final-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
-    unsup_optimizer = TensorLRSGD([
-        {"params": model.conv1.parameters(), "lr": 0.08, },
-        {"params": model.conv2.parameters(), "lr": 0.005, },
-        {"params": model.conv3.parameters(), "lr": 0.01, },
-    ], lr=0)
-    unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
+    # unsup_optimizer = TensorLRSGD([
+    #     {"params": model.conv1.parameters(), "lr": 0.08, },
+    #     {"params": model.conv2.parameters(), "lr": 0.005, },
+    #     {"params": model.conv3.parameters(), "lr": 0.01, },
+    # ], lr=0)
+    # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
-    # hebb_params = [
-    #     {'params': model.conv1.parameters(), 'lr': 0.1},
-    #     {'params': model.conv2.parameters(), 'lr': 0.1},
-    #     {'params': model.conv3.parameters(), 'lr': 0.1}
-    # ]
-    # unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
+    hebb_params = [
+        {'params': model.conv1.parameters(), 'lr': 0.1},
+        {'params': model.conv2.parameters(), 'lr': 0.1},
+        {'params': model.conv3.parameters(), 'lr': 0.1}
+    ]
+    unsup_optimizer = optim.SGD(hebb_params, lr=0)  # The lr here will be overridden by the individual lrs
 
     sup_optimizer = optim.Adam(model.fc1.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     trn_set, tst_set, zca = data.get_data(dataset='cifar10', root='datasets', batch_size=64,
-                                          whiten_lvl=None)
+                                          whiten_lvl=1e-3)
     print(f'Processing Training batches: {len(trn_set)}')
 
     print("Initial Weight statistics")
@@ -167,16 +167,11 @@ if __name__ == "__main__":
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             unsup_optimizer.step()
-            unsup_lr_scheduler.step()
+            # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
-
-    print("Visualizing Receptive fields")
-    visualize_filters(model, model.conv1, num_filters=25)
-    visualize_filters(model, model.conv2, num_filters=25)
-    visualize_filters(model, model.conv3, num_filters=25)
 
     # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
@@ -197,7 +192,7 @@ if __name__ == "__main__":
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     # Train classifier with backpropagation
     print("Training Classifier")
-    for epoch in range(50):
+    for epoch in range(5):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0
@@ -274,3 +269,8 @@ if __name__ == "__main__":
         sns.heatmap(conf_matrix.clone().detach().cpu().numpy(), annot=True, ax=ax)
         logger.log({"test_confusion_matrix": wandb.Image(f)})
         plt.close(f)
+
+    print("Visualizing Receptive fields")
+    visualize_filters(model, model.conv1, num_filters=25)
+    visualize_filters(model, model.conv2, num_filters=25)
+    visualize_filters(model, model.conv3, num_filters=25)

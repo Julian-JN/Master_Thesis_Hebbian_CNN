@@ -2,11 +2,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# from hebb import HebbianConv2d
-# from hebb_depthwise import HebbianDepthConv2d
+from hebb import HebbianConv2d
+from hebb_depthwise import HebbianDepthConv2d
 
-from hebb_abs import HebbianConv2d
-from hebb_abs_depthwise import HebbianDepthConv2d
+# from hebb_abs import HebbianConv2d
+# from hebb_abs_depthwise import HebbianDepthConv2d
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -164,10 +164,10 @@ class Net_Depthwise(nn.Module):
             x = self.pool2(self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x))))))
             x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
             x = self.activ4(self.conv_point4(self.bn_point4(self.conv4(self.bn4(x)))))
-        elif self.version == "hardhebb":  # softhebb and hardhebb
+        elif self.version == "hardhebb":
             x = self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x)))))
             x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
-        elif self.version == "softhebb":  # softhebb and hardhebb
+        elif self.version == "softhebb":
             x = self.pool2(self.activ2(self.conv_point2(self.bn_point2(self.conv2(self.bn2(x))))))
             x = self.pool3(self.activ3(self.conv_point3(self.bn_point3(self.conv3(self.bn3(x))))))
         return x

@@ -192,9 +192,9 @@ class Net_Backpropagation(nn.Module):
         self.dropout = nn.Dropout(0.5)
 
         # Apply custom initialization to depthwise convolutional layers
-        # custom_pointwise_conv_init(self.conv1)
-        # custom_pointwise_conv_init(self.conv2)
-        # custom_pointwise_conv_init(self.conv3)
+        custom_pointwise_conv_init(self.conv1)
+        custom_pointwise_conv_init(self.conv2)
+        custom_pointwise_conv_init(self.conv3)
 
     def forward_features(self, x):
         x = self.pool1(self.activ1(self.conv1(self.bn1(x))))

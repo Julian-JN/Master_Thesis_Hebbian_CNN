@@ -196,15 +196,15 @@ class HebbianDepthConv2d(nn.Module):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
-        # y_depthwise = self.act(self.apply_weights(x, w))
+        y_depthwise = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
-        y_depthwise = self.cosine(x,w)
+        # y_depthwise = self.cosine(x,w)
         return y_depthwise, w
 
     def forward(self, x):
         y_depthwise, w = self.compute_activation(x)
-        if self.kernel !=1:
-            y_depthwise = self.apply_surround_modulation(y_depthwise)
+        # if self.kernel !=1:
+        #     y_depthwise = self.apply_surround_modulation(y_depthwise)
         if self.training:
             self.compute_update(x, y_depthwise, w)
         return y_depthwise
@@ -243,6 +243,9 @@ class HebbianDepthConv2d(nn.Module):
 
     def update_softwta(self, x, y, weight):
         softwta_activs = self.compute_softwta_activations(y)
+        print(x.shape)
+        print(y.shape)
+        print(softwta_activs.shape)
         yx = self.compute_yx(x, softwta_activs)
         yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
         return yx - yu * weight

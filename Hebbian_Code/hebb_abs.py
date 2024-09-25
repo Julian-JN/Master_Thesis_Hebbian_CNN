@@ -118,6 +118,10 @@ class HebbianConv2d(nn.Module):
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
         self.weight = nn.Parameter(weight_range * torch.abs(torch.randn((out_channels, in_channels // self.groups, *self.kernel_size))))
 
+        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # self.weight = nn.Parameter(
+        #     torch.rand((out_channels, in_channels // self.groups, *self.kernel_size)) * weight_range)
+
         # self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
         # self.weight = center_surround_init(out_channels, in_channels, kernel_size, 1)
@@ -185,7 +189,6 @@ class HebbianConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
         # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def update_average_activity(self, y):
@@ -213,7 +216,7 @@ class HebbianConv2d(nn.Module):
         # conv_output = symmetric_pad(x, self.padding)
         conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
-        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
                                  self.groups)
         x_norm = torch.sqrt(x_squared_sum + 1e-8)
         cosine_sim = conv_output / x_norm
@@ -252,8 +255,6 @@ class HebbianConv2d(nn.Module):
             update = self.update_hardwt(x, y, weight)
         elif self.mode == self.MODE_SOFTWTA:
             update = self.update_softwta(x, y, weight)
-        elif self.mode == self.MODE_ANTIHARDWT:
-            update = self.update_antihardwt(x, y, weight)
         elif self.mode == self.MODE_BCM:
             update = self.update_bcm(x, y, weight)
         else:
@@ -283,14 +284,6 @@ class HebbianConv2d(nn.Module):
         softwta_activs = self.compute_softwta_activations(y)
         yx = self.compute_yx(x, softwta_activs)
         yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
-        update = yx - yu.view(-1, 1, 1, 1) * weight
-        return update
-
-    def update_antihardwt(self, x, y, weight):
-        # SoftHebb Grossberg Instar Variation but for Hard-WTA
-        hardwta_activs = self.compute_antihardwta_activations(y)
-        yx = self.compute_yx(x, hardwta_activs)
-        yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
         update = yx - yu.view(-1, 1, 1, 1) * weight
         return update
 

@@ -131,9 +131,13 @@ class HebbianDepthConv2d(nn.Module):
         self.F_padding = (padding, padding, padding, padding)
         self.groups = in_channels # in_channels for depthwise
 
-        # # Depthwise separable weights
+        # Depthwise separable weights
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
         self.weight = nn.Parameter(weight_range * torch.abs(torch.randn(in_channels, 1, *self.kernel_size)))
+
+        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
+        # self.weight = nn.Parameter(
+        #     torch.rand((out_channels, in_channels // self.groups, *self.kernel_size)) * weight_range)
 
         # self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
@@ -179,10 +183,10 @@ class HebbianDepthConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        conv_output = symmetric_pad(x, self.padding)
-        conv_output = F.conv2d(conv_output, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
+        # conv_output = symmetric_pad(x, self.padding)
+        conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
-        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, self.padding, self.dilation,
+        x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
                                  self.groups)
         x_norm = torch.sqrt(x_squared_sum + 1e-8)
         cosine_sim = conv_output / x_norm
@@ -195,7 +199,6 @@ class HebbianDepthConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
         # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def apply_surround_modulation(self, y):
@@ -203,6 +206,7 @@ class HebbianDepthConv2d(nn.Module):
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
 
     def compute_activation(self, x):
+        x = symmetric_pad(x, self.padding)
         w = self.weight.abs()
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)

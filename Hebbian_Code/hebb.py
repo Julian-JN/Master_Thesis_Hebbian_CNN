@@ -228,17 +228,17 @@ class HebbianConv2d(nn.Module):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
-        # y = self.act(self.apply_weights(x, w))
+        y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
-        y = self.cosine(x, w)
+        # y = self.cosine(x, w)
         return x,y, w
 
     def forward(self, x):
         x,y, w = self.compute_activation(x)
         # if self.lateral_inhibition_mode == "combined":
         #     y = self.combined_lateral_inhibition(y)
-        if self.kernel != 1:
-            y = self.apply_surround_modulation(y)
+        # if self.kernel != 1:
+        #     y = self.apply_surround_modulation(y)
         if self.training:
             # self.update_average_activity(y)
             # self.synaptic_scaling()

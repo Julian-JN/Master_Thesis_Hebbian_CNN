@@ -8,22 +8,8 @@ import matplotlib.pyplot as plt
 
 import torch.nn.init as init
 
-"""
-    TODO:
-    OPTIMIZE CODE:
-        - Vectorization and In-Place operations
-        - Optimize data movement between CPU and GPU
-        - Simplify code: more modularity
-        - Removed redundant computations: Some calculations that were repeated in different modes have been consolidated into separate methods.
-        - Each learning mode now has its own update method, making it easier to maintain and extend.
-
-    ABS Changed:
-        - Unify Abs and Mixed together: Difference in weight intialisation, abs weights and update
-        - Everything else the same?
-"""
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(0)
+torch.manual_seed(36)
 
 
 def normalize(x, dim=None):
@@ -228,17 +214,15 @@ class HebbianConv2d(nn.Module):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
-        y = self.act(self.apply_weights(x, w))
+        # y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
-        # y = self.cosine(x, w)
-        return x,y, w
+        y = self.cosine(x, w)
+        return x, y, w
 
     def forward(self, x):
         x,y, w = self.compute_activation(x)
-        # if self.lateral_inhibition_mode == "combined":
-        #     y = self.combined_lateral_inhibition(y)
-        # if self.kernel != 1:
-        #     y = self.apply_surround_modulation(y)
+        if self.kernel != 1:
+            y = self.apply_surround_modulation(y)
         if self.training:
             # self.update_average_activity(y)
             # self.synaptic_scaling()

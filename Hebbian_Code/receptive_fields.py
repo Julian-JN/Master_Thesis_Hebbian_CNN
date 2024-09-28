@@ -2,11 +2,11 @@ import matplotlib.pyplot as plt
 import torch
 from torch import nn, optim
 import torch.nn.functional as F
-from hebb import HebbianConv2d
-from hebb_depthwise import HebbianDepthConv2d
+# from hebb import HebbianConv2d
+# from hebb_depthwise import HebbianDepthConv2d
 
-# from hebb_abs import HebbianConv2d
-# from hebb_abs_depthwise import HebbianDepthConv2d
+from hebb_abs import HebbianConv2d
+from hebb_abs_depthwise import HebbianDepthConv2d
 import wandb
 
 def get_partial_model(model, target_layer):

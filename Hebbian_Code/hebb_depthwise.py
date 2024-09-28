@@ -8,7 +8,7 @@ import torch.nn.init as init
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(0)
+torch.manual_seed(36)
 
 
 def normalize(x, dim=None):
@@ -184,7 +184,7 @@ class HebbianDepthConv2d(nn.Module):
         # w = self.apply_lebesgue_norm(self.weight)
         # if self.padding != 0 and self.padding != None:
         # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        x = symmetric_pad(x, self.padding)
+        # x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def apply_surround_modulation(self, y):
@@ -196,15 +196,15 @@ class HebbianDepthConv2d(nn.Module):
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition(w)
-        y_depthwise = self.act(self.apply_weights(x, w))
+        # y_depthwise = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
-        # y_depthwise = self.cosine(x,w)
-        return y_depthwise, w
+        y_depthwise = self.cosine(x,w)
+        return x, y_depthwise, w
 
     def forward(self, x):
-        y_depthwise, w = self.compute_activation(x)
-        # if self.kernel !=1:
-        #     y_depthwise = self.apply_surround_modulation(y_depthwise)
+        x, y_depthwise, w = self.compute_activation(x)
+        if self.kernel !=1:
+            y_depthwise = self.apply_surround_modulation(y_depthwise)
         if self.training:
             self.compute_update(x, y_depthwise, w)
         return y_depthwise
@@ -243,9 +243,9 @@ class HebbianDepthConv2d(nn.Module):
 
     def update_softwta(self, x, y, weight):
         softwta_activs = self.compute_softwta_activations(y)
-        print(x.shape)
-        print(y.shape)
-        print(softwta_activs.shape)
+        # print(x.shape)
+        # print(y.shape)
+        # print(softwta_activs.shape)
         yx = self.compute_yx(x, softwta_activs)
         yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
         return yx - yu * weight

@@ -15,7 +15,7 @@ import wandb
 from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clusters
 from receptive_fields import visualize_filters
 
-torch.manual_seed(0)
+torch.manual_seed(36)
 
 def calculate_metrics(preds, labels, num_classes):
     if num_classes == 2:
@@ -103,13 +103,13 @@ class TensorLRSGD(optim.SGD):
 
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Hebbian(hebb_params=hebb_param, version="softhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"SoftHebb-Surround/HardWTA/Cos-Instar",project='Final-HebbianCNN', model=model)
+        f"Long-SoftHebb-Surr/HardWTA/Cos-BCM",project='Final-ReRuns-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
@@ -192,7 +192,7 @@ if __name__ == "__main__":
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
     # Train classifier with backpropagation
     print("Training Classifier")
-    for epoch in range(5):
+    for epoch in range(10):
         model.fc1.train()
         model.dropout.train()
         running_loss = 0.0

@@ -234,10 +234,10 @@ class HebbianConv2d(nn.Module):
         # y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         y = self.cosine(x, w)
-        return y, w
+        return x,y, w
 
     def forward(self, x):
-        y, w = self.compute_activation(x)
+        x,y, w = self.compute_activation(x)
         # if self.lateral_inhibition_mode == "combined":
         #     y = self.combined_lateral_inhibition(y)
         if self.kernel != 1:

@@ -213,10 +213,10 @@ class HebbianDepthConv2d(nn.Module):
         # y_depthwise = self.act(self.apply_weights(x, w))
         # For cosine similarity activation if cosine is to be used for next layer
         y_depthwise = self.cosine(x,w)
-        return y_depthwise, w
+        return x,y_depthwise, w
 
     def forward(self, x):
-        y_depthwise, w = self.compute_activation(x)
+        x,y_depthwise, w = self.compute_activation(x)
         if self.kernel !=1:
             y_depthwise = self.apply_surround_modulation(y_depthwise)
         if self.training:

@@ -6,6 +6,9 @@ import torch.nn.functional as F
 from torch.nn.modules.utils import _pair
 import matplotlib.pyplot as plt
 
+# Code uses elements from {https://github.com/GabrieleLagani/hebbdemo} and {
+# https://github.com/NeuromorphicComputing/SoftHebb}
+
 import torch.nn.init as init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -26,7 +29,7 @@ def symmetric_pad(x, padding):
 
 def create_sm_kernel(kernel_size=5, sigma_e=1.2, sigma_i=1.4):
     """
-    Create a surround modulation kernel that matches the paper's specifications.
+    Create a surround modulation kernel.
     :param kernel_size: Size of the SM kernel.
     :param sigma_e: Standard deviation for the excitatory Gaussian.
     :param sigma_i: Standard deviation for the inhibitory Gaussian.
@@ -85,7 +88,6 @@ class HebbianConv2d(nn.Module):
 		:param alpha: weighting coefficient between hebbian and backprop updates (0 means fully backprop, 1 means fully hebbian).
 		"""
         super(HebbianConv2d, self).__init__()
-        # spatial competition is the appropriate comp modes
         self.mode = mode
         self.out_channels = out_channels
         self.in_channels = in_channels
@@ -105,15 +107,19 @@ class HebbianConv2d(nn.Module):
         self.weight = nn.Parameter(
             weight_range * torch.randn((out_channels, in_channels // self.groups, *self.kernel_size)))
 
+        # Different initialisation schemes for future work
+
         # self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
         # self.weight = center_surround_init(out_channels, in_channels, kernel_size, 1)
+
         print(self.weight.shape)
         self.w_nrm = w_nrm
         self.act = act
-        # self.act = self.cos_sim2d
-        self.theta_decay = 0.5
+
+        # BCM parameters
         if mode == "bcm":
+            self.theta_decay = 0.5
             self.theta = nn.Parameter(torch.ones(out_channels), requires_grad=False)
 
         self.register_buffer('delta_w', torch.zeros_like(self.weight))
@@ -122,27 +128,28 @@ class HebbianConv2d(nn.Module):
         self.contrast = contrast
         self.uniformity = uniformity
         self.alpha = alpha
-        self.wta_competition = wta_competition
-        self.lateral_inhibition_mode = lateral_competition
-        self.lateral_learning_rate = lateral_inhibition_strength  # Adjust as needed
         self.lebesgue_p = 2
-
         self.prune_rate = prune_rate  # 99% of connections are pruned
         self.t_invert = torch.tensor(t_invert)
 
+        #For presynaptic competition
         self.presynaptic_competition_type = "softmax"
         self.presynaptic_weights = False  # presynaptic competition in forward pass
 
+        # For temporal and statistical thresholds
         self.activation_history = None
         self.temporal_window = 500
         self.competition_k = 2
         self.competition_type = "hard"
 
+        # For surround lateral inhibition kernel
         if self.kernel != 1:
             self.sm_kernel = create_sm_kernel()
             self.register_buffer('surround_kernel', self.sm_kernel)
+            # Visualise what the kernel will look like
             self.visualize_surround_modulation_kernel()
 
+        # For direct homeostasis effect
         self.target_activity = 0.1
         self.scaling_rate = 0.001
         self.register_buffer('average_activity', torch.zeros(out_channels))
@@ -163,26 +170,27 @@ class HebbianConv2d(nn.Module):
         plt.show()
 
     def apply_lebesgue_norm(self, w):
+        """Apply Lebesgue norm to weights."""
         return torch.sign(w) * torch.abs(w) ** (self.lebesgue_p - 1)
 
     def apply_weights(self, x, w):
         """
-		This function provides the logic for combining input x and weight w
+        Apply convolutional operation with weights to input.
 		"""
-        # w = self.apply_lebesgue_norm(self.weight)
-        # if self.padding != 0 and self.padding != None:
-        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def update_average_activity(self, y):
+        """Update the average activity of neurons."""
         current_activity = y.mean(dim=(0, 2, 3))
         self.average_activity = 0.9 * self.average_activity + 0.1 * current_activity
 
     def synaptic_scaling(self):
+        """Apply synaptic scaling to maintain target activity."""
         scale_factor = self.target_activity / (self.average_activity + 1e-6)
         self.weight.data *= (1 + self.scaling_rate * (scale_factor - 1)).view(-1, 1, 1, 1)
 
     def structural_plasticity(self):
+        """Prune sparse weights and create new ones."""
         with torch.no_grad():
             # Pruning step
             prune_threshold = torch.quantile(torch.abs(self.weight), self.prune_threshold_percentile / 100)
@@ -195,6 +203,7 @@ class HebbianConv2d(nn.Module):
             self.weight.data[new_synapses] = torch.randn_like(self.weight)[new_synapses] * self.new_synapse_strength
 
     def cosine(self, x, w):
+        """Compute cosine similarity between input and weights."""
         w_normalized = F.normalize(w, p=2, dim=1)
         # conv_output = symmetric_pad(x, self.padding)
         conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
@@ -206,30 +215,36 @@ class HebbianConv2d(nn.Module):
         return cosine_sim
 
     def apply_surround_modulation(self, y):
+        """Apply surround modulation to the output."""
         return F.conv2d(y, self.sm_kernel.repeat(self.out_channels, 1, 1, 1),
                         padding=self.sm_kernel.size(-1) // 2, groups=self.out_channels)
 
     def compute_activation(self, x):
+        """Compute the activation of the layer."""
         x = symmetric_pad(x, self.padding)
         w = self.weight
         if self.w_nrm: w = normalize(w, dim=(1, 2, 3))
         if self.presynaptic_weights: w = self.compute_presynaptic_competition_global(w)
+        # No activation required:
         # y = self.act(self.apply_weights(x, w))
-        # For cosine similarity activation if cosine is to be used for next layer
+        # For cosine similarity activation:
         y = self.cosine(x, w)
         return x, y, w
 
     def forward(self, x):
         x,y, w = self.compute_activation(x)
+        # Only apply lateral inhibition is spatial dimensions exists
         if self.kernel != 1:
             y = self.apply_surround_modulation(y)
         if self.training:
+            # Optional mechanisms
             # self.update_average_activity(y)
             # self.synaptic_scaling()
             self.compute_update(x, y, w)
         return y
 
     def compute_update(self, x, y, weight):
+        """Compute weight updates based on the chosen learning mode."""
         if self.mode == self.MODE_BASIC_HEBBIAN:
             update = self.update_basic_hebbian(x, y, weight)
         elif self.mode == self.MODE_HARDWT:
@@ -251,7 +266,7 @@ class HebbianConv2d(nn.Module):
         self.delta_w += update
 
     def update_basic_hebbian(self, x, y, weight):
-        # Grossberg Instar rule
+        """Implement basic Hebbian learning (Grossberg Instar rule)."""
         yx = self.compute_yx(x, y)
         y_sum = y.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
         yw = y_sum * weight
@@ -259,7 +274,7 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_hardwt(self, x, y, weight):
-        # Grossberg Instar with wta mask
+        """Implement hard Winner-Take-All (WTA) Hebbian learning."""
         y_wta = y * self.compute_wta_mask(y)
         yx = self.compute_yx(x, y_wta)
         yu = torch.sum(y_wta, dim=(0, 2, 3))
@@ -267,7 +282,7 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_softwta(self, x, y, weight):
-        # SoftHebb Grossberg Instar Variation
+        """Implement soft Winner-Take-All Hebbian learning (SoftHebb)."""
         softwta_activs = self.compute_softwta_activations(y)
         yx = self.compute_yx(x, softwta_activs)
         yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3))
@@ -275,7 +290,7 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_antihardwt(self, x, y, weight):
-        # SoftHebb Grossberg Instar Variation but for Hard-WTA
+        """Implement anti-Hebbian hard Winner-Take-All learning."""
         hardwta_activs = self.compute_antihardwta_activations(y)
         yx = self.compute_yx(x, hardwta_activs)
         yu = torch.sum(torch.mul(hardwta_activs, y), dim=(0, 2, 3))
@@ -283,6 +298,7 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_bcm(self, x, y, weight):
+        """Implement BCM (Bienenstock-Cooper-Munro) learning rule."""
         y_wta = y * self.compute_wta_mask(y)
         y_squared = y_wta.pow(2).mean(dim=(0, 2, 3))
         self.theta.data = (1 - self.theta_decay) * self.theta + self.theta_decay * y_squared
@@ -293,16 +309,18 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_temporal_competition(self, x, y, weight):
+        """Implement temporal competition-based learning."""
         self.update_activation_history(y)
         temporal_winners = self.compute_temporal_winners(y)
         y_winners = temporal_winners * y
-        # y_winners = y_winners * self.apply_competition(y_winners)
+        y_winners = y_winners * self.apply_competition(y_winners)
         yx = self.compute_yx(x, y_winners)
         y_sum = y_winners.sum(dim=(0, 2, 3)).view(-1, 1, 1, 1)
         update = yx - y_sum * weight
         return update
 
     def update_adaptive_threshold(self, x, y, weight):
+        """Implement adaptive/statistics threshold-based learning."""
         batch_size, out_channels, height_out, width_out = y.shape
         similarities = F.conv2d(x, weight, stride=self.stride, padding=self.padding, groups=self.groups)
         similarities = similarities / (torch.norm(weight.view(out_channels, -1), dim=1).view(1, -1, 1, 1) + 1e-10)
@@ -316,6 +334,7 @@ class HebbianConv2d(nn.Module):
         return update
 
     def update_activation_history(self, y):
+        """Update the activation history for temporal competition."""
         if self.activation_history is None:
             self.activation_history = y.detach().clone()
         else:
@@ -324,6 +343,7 @@ class HebbianConv2d(nn.Module):
                 self.activation_history = self.activation_history[-self.temporal_window:]
 
     def compute_temporal_winners(self, y):
+        """Select winners of temporal competition."""
         batch_size, out_channels, height_out, width_out = y.shape
         history_spatial = self.activation_history.view(-1, out_channels, height_out, width_out)
         median_activations = torch.median(history_spatial, dim=0)[0]
@@ -332,11 +352,13 @@ class HebbianConv2d(nn.Module):
         return (y > temporal_threshold).float()
 
     def compute_adaptive_threshold(self, similarities):
+        """Create threshold for statistical thresholding."""
         mean_sim = similarities.mean(dim=1, keepdim=True)
         std_sim = similarities.std(dim=1, keepdim=True)
         return mean_sim + self.competition_k * std_sim
 
     def apply_competition(self, y):
+        # Hard-WTA or Soft-WTA competition mask for temporal/statistical thresholding
         batch_size, out_channels, height, width = y.shape
         if self.mode in [self.MODE_TEMPORAL_COMPETITION, self.MODE_ADAPTIVE_THRESHOLD]:
             if self.competition_type == 'hard':
@@ -352,7 +374,7 @@ class HebbianConv2d(nn.Module):
         return y
 
     def compute_yx(self, x, y):
-        # Computes common y*w term from Grossberg Instar
+        """Compute yx term from Grossberg Instar rule"""
         yx = F.conv2d(x.transpose(0, 1), y.transpose(0, 1), padding=0,
                       stride=self.dilation, dilation=self.stride).transpose(0, 1)
         if self.groups != 1:
@@ -360,7 +382,7 @@ class HebbianConv2d(nn.Module):
         return yx
 
     def compute_wta_mask(self, y):
-        # Computes WTA Mask
+        """Compute Hard-WTA mask."""
         batch_size, out_channels, height_out, width_out = y.shape
         y_flat = y.transpose(0, 1).reshape(out_channels, -1)
         win_neurons = torch.argmax(y_flat, dim=0)
@@ -368,7 +390,7 @@ class HebbianConv2d(nn.Module):
         return wta_mask.transpose(0, 1).view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
 
     def compute_softwta_activations(self, y):
-        # Computes SoftHebb mask and Hebb/AntiHebb implementation
+        """Computes SoftHebb mask and Hebb/AntiHebb implementation."""
         batch_size, out_channels, height_out, width_out = y.shape
         flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
         flat_softwta_activs = torch.softmax(self.t_invert * flat_weighted_inputs, dim=0)
@@ -379,7 +401,7 @@ class HebbianConv2d(nn.Module):
         return flat_softwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
 
     def compute_antihardwta_activations(self, y):
-        # Computes Hard-WTA mask and Hebb/AntiHebb implementation
+        # Computes Hard-WTA mask and Hebb/AntiHebb implementation.
         batch_size, out_channels, height_out, width_out = y.shape
         flat_weighted_inputs = y.transpose(0, 1).reshape(out_channels, -1)
         win_neurons = torch.argmax(flat_weighted_inputs, dim=0)
@@ -390,7 +412,7 @@ class HebbianConv2d(nn.Module):
         return flat_hardwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
 
     def compute_presynaptic_competition(self, m):
-        # It promotes diversity among output channels, as they compete for the strength of connection to each input feature.
+        # This presynaptic competition promotes diversity among output channels.
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
             return m / (m.sum(dim=0, keepdim=True) + 1e-6)
@@ -402,7 +424,7 @@ class HebbianConv2d(nn.Module):
             raise ValueError(f"Unknown competition type: {self.competition_type}")
 
     def compute_presynaptic_competition_spatial(self, m):
-        # The spatial competition encourages each input-output channel pair to focus on specific spatial patterns.
+        # The presynaptic spatial competition encourages each input-output channel pair.
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
             # Sum across spatial dimensions (last two dimensions)
@@ -422,7 +444,7 @@ class HebbianConv2d(nn.Module):
             raise ValueError(f"Unknown competition type: {self.presynaptic_competition_type}")
 
     def compute_presynaptic_competition_input_channels(self, m):
-        # The input channel competition promotes specialization of each output channel across different input features.
+        # The presynaptic input competition promotes specialisation of each output channel across input features.
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
             # Sum across input channel dimension
@@ -438,7 +460,7 @@ class HebbianConv2d(nn.Module):
 
     def compute_presynaptic_competition_global(self, m):
         # The global competition creates a more intense competition where every weight competes with all others,
-        # potentially leading to very sparse but highly specialized connections.
+        # potentially leading to very sparse but highly specialised connections.
         m = 1 / (torch.abs(m) + 1e-6)
         if self.presynaptic_competition_type == 'linear':
             # Global sum across all dimensions
@@ -472,6 +494,7 @@ class HebbianConv2d(nn.Module):
             self.weight.grad = (1 - self.alpha) * self.weight.grad - self.alpha * self.delta_w
         self.delta_w.zero_()
 
+    # Update method to modify weights without requiring an optimiser
     # @torch.no_grad()
     # # Weight Update
     # def local_update(self):

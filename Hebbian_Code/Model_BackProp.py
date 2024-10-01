@@ -14,6 +14,11 @@ import wandb
 import math
 import seaborn as sns
 
+"""
+Backpropagation model similar to model_hebb.py
+TODO: make code more similar to model_hebb.py, with different architectures controlled by an argument
+"""
+
 torch.manual_seed(0)
 
 class Triangle(nn.Module):

@@ -178,9 +178,6 @@ def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
         plt.close(fig)
 
 
-# Example usage:
-# plot_ltp_ltd(model.conv1, 'conv1', num_filters=10, detailed_mode=True)
-
 def calculate_metrics(preds, labels, num_classes):
     if num_classes == 2:
         accuracy = Accuracy(task='binary', num_classes=num_classes).to(device)
@@ -260,6 +257,8 @@ def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perple
     wandb.log({"Class separation": wandb.Image(fig)})
     plt.close(fig)
 
+# Main file to train backpropgation network
+# TODO: Same visualisation code as Hebbian is not fully implemented
 
 if __name__ == "__main__":
 

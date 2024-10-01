@@ -1,6 +1,7 @@
 """
 Demo single-file script to train a ConvNet on CIFAR10 using SoftHebb, an unsupervised, efficient and bio-plausible
 learning algorithm
+Code comes from ttps://github.com/NeuromorphicComputing/SoftHebb
 """
 import math
 import os

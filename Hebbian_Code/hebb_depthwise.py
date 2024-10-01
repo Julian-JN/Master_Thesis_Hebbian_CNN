@@ -7,6 +7,11 @@ from torch.nn.modules.utils import _pair
 import torch.nn.init as init
 
 
+"""
+Uses almost identical code to hebb.py. Please refer to hebb.py for additional explanations on code functionality
+Only changes are the competition modes, which apply competition across spatial neurons in a filter for channel independence
+"""
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.manual_seed(36)
 
@@ -126,13 +131,10 @@ class HebbianDepthConv2d(nn.Module):
 
         # self.weight = nn.Parameter(torch.empty(in_channels, 1, *self.kernel_size))
         # init.kaiming_uniform_(self.weight)
-
         # self.weight = center_surround_init(in_channels, 1, kernel_size, 1)
-        # print(self.weight.shape)
 
         self.w_nrm = w_nrm
         self.act = act
-        # self.act = self.cos_sim2d
         self.theta_decay = 0.5
         if mode == "bcm":
             self.theta = nn.Parameter(torch.ones(out_channels))
@@ -168,7 +170,6 @@ class HebbianDepthConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        # conv_output = symmetric_pad(x, self.padding)
         conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
         x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
@@ -182,9 +183,6 @@ class HebbianDepthConv2d(nn.Module):
 		This function provides the logic for combining input x and weight w
 		"""
         # w = self.apply_lebesgue_norm(self.weight)
-        # if self.padding != 0 and self.padding != None:
-        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
-        # x = symmetric_pad(x, self.padding)
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def apply_surround_modulation(self, y):
@@ -243,9 +241,6 @@ class HebbianDepthConv2d(nn.Module):
 
     def update_softwta(self, x, y, weight):
         softwta_activs = self.compute_softwta_activations(y)
-        # print(x.shape)
-        # print(y.shape)
-        # print(softwta_activs.shape)
         yx = self.compute_yx(x, softwta_activs)
         yu = torch.sum(torch.mul(softwta_activs, y), dim=(0, 2, 3)).view(self.in_channels, 1, 1, 1)
         return yx - yu * weight

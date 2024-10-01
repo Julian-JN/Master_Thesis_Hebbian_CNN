@@ -14,8 +14,6 @@ def print_weight_statistics(layer, layer_name):
     """
     Prints statistics of the weights from a given layer.
     Args:
-    layer (nn.Module): The layer to analyze
-    layer_name (str): Name of the layer for printing purposes
     """
     weights = layer.weight.data
 
@@ -33,7 +31,7 @@ def print_weight_statistics(layer, layer_name):
     print()
 
 
-
+# Visualise different information regarding weights and changes in weights
 def plot_ltp_ltd_ex_in(layer, layer_name, num_filters=10, detailed_mode=False):
     weights = {
         'wee': layer.weight_ee.data,
@@ -382,7 +380,7 @@ def plot_ltp_ltd(layer, layer_name, num_filters=10, detailed_mode=False):
         plt.close(fig)
 
 
-
+# Visualise class separation
 def visualize_data_clusters(dataloader, model=None, method='tsne', dim=2, perplexity=30, n_neighbors=15, min_dist=0.1,
                             n_components=2, random_state=42):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

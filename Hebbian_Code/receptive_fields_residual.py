@@ -7,6 +7,9 @@ from hebb_depthwise import HebbianDepthConv2d
 from model_residual import HebbianResidualBlock
 import wandb
 
+# Code to visualise receptive fields. Modified version of receptive_fields.py to work with residual blocks
+
+
 def remove_padding_except_conv2(model):
     for module in model.modules():
         if isinstance(module, HebbianResidualBlock):

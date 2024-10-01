@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 import torch.nn.init as init
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(36)
+torch.manual_seed(0)
 
 
 def normalize(x, dim=None):
@@ -228,12 +228,14 @@ class HebbianConv2d(nn.Module):
         # No activation required:
         # y = self.act(self.apply_weights(x, w))
         # For cosine similarity activation:
+        # Must manually change to allow/disable cosine similarity
         y = self.cosine(x, w)
         return x, y, w
 
     def forward(self, x):
         x,y, w = self.compute_activation(x)
         # Only apply lateral inhibition is spatial dimensions exists
+        # Must manually change to allow/disable surround inhibition
         if self.kernel != 1:
             y = self.apply_surround_modulation(y)
         if self.training:

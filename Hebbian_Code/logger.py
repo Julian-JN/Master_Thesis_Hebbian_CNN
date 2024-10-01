@@ -1,5 +1,5 @@
 import wandb
-
+# WandB logger
 class Logger:
 
     def __init__(self, experiment_name, logger_name='', project='inm705', model=None):

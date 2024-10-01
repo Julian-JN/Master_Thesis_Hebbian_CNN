@@ -9,17 +9,8 @@ import matplotlib.pyplot as plt
 import torch.nn.init as init
 
 """
-    TODO:
-    OPTIMIZE CODE:
-        - Vectorization and In-Place operations
-        - Optimize data movement between CPU and GPU
-        - Simplify code: more modularity
-        - Removed redundant computations: Some calculations that were repeated in different modes have been consolidated into separate methods.
-        - Each learning mode now has its own update method, making it easier to maintain and extend.
-        
-    ABS Changed:
-        - Unify Abs and Mixed together: Difference in weight intialisation, abs weights and update
-        - Everything else the same?
+Uses almost identical code to hebb.py. Please refer to hebb.py for additional explanations on code functionality
+Only changes are the initialisation and update of weights, to ensure adherence to Dale's Principle
 """
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,17 +109,9 @@ class HebbianConv2d(nn.Module):
         weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
         self.weight = nn.Parameter(weight_range * torch.abs(torch.randn((out_channels, in_channels // self.groups, *self.kernel_size))))
 
-        # weight_range = 25 / math.sqrt(in_channels * kernel_size * kernel_size)
-        # self.weight = nn.Parameter(
-        #     torch.rand((out_channels, in_channels // self.groups, *self.kernel_size)) * weight_range)
-
-        # self.weight = nn.Parameter(torch.empty(out_channels, in_channels // self.groups, *self.kernel_size))
-        # init.kaiming_uniform_(self.weight)
-        # self.weight = center_surround_init(out_channels, in_channels, kernel_size, 1)
         print(self.weight.shape)
         self.w_nrm = w_nrm
         self.act = act
-        # self.act = self.cos_sim2d
         self.theta_decay = 0.5
         if mode == "bcm":
             self.theta = nn.Parameter(torch.ones(out_channels), requires_grad=False)
@@ -184,11 +167,8 @@ class HebbianConv2d(nn.Module):
 
     def apply_weights(self, x, w):
         """
-		This function provides the logic for combining input x and weight w
+		This function combines input x and weight w
 		"""
-        # w = self.apply_lebesgue_norm(self.weight)
-        # if self.padding != 0 and self.padding != None:
-        # x = F.pad(x, self.F_padding, self.padding_mode)  # pad input
         return F.conv2d(x, w, None, self.stride, 0, self.dilation, groups=self.groups)
 
     def update_average_activity(self, y):
@@ -213,7 +193,6 @@ class HebbianConv2d(nn.Module):
 
     def cosine(self, x, w):
         w_normalized = F.normalize(w, p=2, dim=1)
-        # conv_output = symmetric_pad(x, self.padding)
         conv_output = F.conv2d(x, w_normalized, None, self.stride, 0, self.dilation, groups=self.groups)
         x_squared = x.pow(2)
         x_squared_sum = F.conv2d(x_squared, torch.ones_like(w), None, self.stride, 0, self.dilation,
@@ -238,8 +217,6 @@ class HebbianConv2d(nn.Module):
 
     def forward(self, x):
         x,y, w = self.compute_activation(x)
-        # if self.lateral_inhibition_mode == "combined":
-        #     y = self.combined_lateral_inhibition(y)
         if self.kernel != 1:
             y = self.apply_surround_modulation(y)
         if self.training:
@@ -336,11 +313,11 @@ class HebbianConv2d(nn.Module):
         flat_hardwta_activs = flat_weighted_inputs * anti_hebbian_mask
         return flat_hardwta_activs.view(out_channels, batch_size, height_out, width_out).transpose(0, 1)
 
+    # Weight update which ensures only excitatory weights
     @torch.no_grad()
     # Weight Update
     def local_update(self):
         new_weight = self.weight + 0.1 * self.alpha * self.delta_w
         # Update weights
         self.weight.copy_(new_weight.abs())
-        # self.structural_plasticity()
         self.delta_w.zero_()

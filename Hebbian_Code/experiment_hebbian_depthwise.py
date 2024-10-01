@@ -17,6 +17,10 @@ from visualizer import plot_ltp_ltd, plot_ltp_ltd_ex_in, print_weight_statistics
 import pandas as pd
 from receptive_fields import visualize_filters
 
+"""
+Identical to experimen_hebbian.py, but adapted for depthwise convolutions
+"""
+
 torch.manual_seed(0)
 
 def calculate_metrics(preds, labels, num_classes):
@@ -112,7 +116,7 @@ if __name__ == "__main__":
     model.to(device)
 
     wandb_logger = Logger(
-        f"Dale_Depthwise_HardHebb-Surr/HardWTA/Cos-Instar",project='Final-ReRuns-HebbianCNN', model=model)
+        f"Depthwise_HardHebb-Surr/HardWTA/Cos-Instar",project='Final-ReRuns-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")

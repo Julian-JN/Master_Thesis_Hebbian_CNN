@@ -17,6 +17,10 @@ from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clu
 import pandas as pd
 from receptive_fields_residual import visualize_filters
 
+"""
+Identical to experimen_hebbian.py, but adapted for depthwise convolutions
+"""
+
 torch.manual_seed(0)
 
 def calculate_metrics(preds, labels, num_classes):

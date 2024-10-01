@@ -15,8 +15,14 @@ import wandb
 from visualizer import plot_ltp_ltd, print_weight_statistics, visualize_data_clusters
 from receptive_fields import visualize_filters
 
-torch.manual_seed(36)
+"""
+Code structure inspired and modified from https://github.com/NeuromorphicComputing/SoftHebb
+Similar training and testing loop, with some identical function for the custom learning rate schedule
+"""
 
+torch.manual_seed(0)
+
+# Calculate evaluation metrics
 def calculate_metrics(preds, labels, num_classes):
     if num_classes == 2:
         accuracy = Accuracy(task='binary', num_classes=num_classes).to(device)
@@ -101,19 +107,22 @@ class TensorLRSGD(optim.SGD):
                 p.add_(-group['lr'] * d_p)
         return loss
 
+# Main training and testing loop
+# Experiment is configured to replicate SoftHebb-Surr/HardWTA/Cos-Instar configuration results
 if __name__ == "__main__":
 
-    hebb_param = {'mode': 'bcm', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
+    hebb_param = {'mode': 'hard', 'w_nrm': False, 'act': nn.Identity(), 'k': 1, 'alpha': 1.}
     device = torch.device('cuda:0')
     model = Net_Hebbian(hebb_params=hebb_param, version="softhebb")
     model.to(device)
 
     wandb_logger = Logger(
-        f"Long-SoftHebb-Surr/HardWTA/Cos-BCM",project='Final-ReRuns-HebbianCNN', model=model)
+        f"SoftHebb-Surr/HardWTA/Cos-Instar",project='Final-ReRuns-HebbianCNN', model=model)
     logger = wandb_logger.get_logger()
     num_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameter Count Total: {num_parameters}")
 
+    # Custom learning rate and scheduler for only SoftHebb implementation
     # unsup_optimizer = TensorLRSGD([
     #     {"params": model.conv1.parameters(), "lr": 0.08, },
     #     {"params": model.conv2.parameters(), "lr": 0.005, },
@@ -121,6 +130,7 @@ if __name__ == "__main__":
     # ], lr=0)
     # unsup_lr_scheduler = WeightNormDependentLR(unsup_optimizer, power_lr=0.5)
 
+    # Learning rate for all other hebbian experiments
     hebb_params = [
         {'params': model.conv1.parameters(), 'lr': 0.1},
         {'params': model.conv2.parameters(), 'lr': 0.1},
@@ -144,6 +154,7 @@ if __name__ == "__main__":
     model.visualize_filters('conv1')
 
     running_loss = 0.0
+    # Hebbian feature extraction
     for epoch in range(1):
         print(f"Training Hebbian epoch {epoch}")
         for i, data in enumerate(trn_set, 0):
@@ -167,13 +178,13 @@ if __name__ == "__main__":
                 if hasattr(layer, 'local_update'):
                     layer.local_update()
             unsup_optimizer.step()
+            # Scheduler only for SoftHebb
             # unsup_lr_scheduler.step()
     print("Visualizing Filters")
     model.visualize_filters('conv1', f'results/{"demo"}/demo_conv1_filters_epoch_{1}.png')
     model.visualize_filters('conv2', f'results/{"demo"}/demo_conv2_filters_epoch_{1}.png')
     model.visualize_filters('conv3', f'results/{"demo"}/demo_conv3_filters_epoch_{1}.png')
 
-    # Supervised training of classifier
     # set requires grad false and eval mode for all modules but classifier
     unsup_optimizer.zero_grad()
     model.conv1.requires_grad = False
@@ -190,6 +201,7 @@ if __name__ == "__main__":
     # model.bn4.eval()
     print("Visualizing Test Class separation")
     visualize_data_clusters(tst_set, model=model, method='umap', dim=2)
+    # Supervised training of classifier
     # Train classifier with backpropagation
     print("Training Classifier")
     for epoch in range(10):
@@ -239,7 +251,7 @@ if __name__ == "__main__":
         total = 0
         test_preds = []
         test_labels = []
-        # since we're not training, we don't need to calculate the gradients for our outputs
+        # since we're not training, we don't need to calculate the gradients for our outputs/model
         with torch.no_grad():
             for data in tst_set:
                 images, labels = data
@@ -270,6 +282,7 @@ if __name__ == "__main__":
         logger.log({"test_confusion_matrix": wandb.Image(f)})
         plt.close(f)
 
+    # Visualise receptive fields at end, as this code alters the model architecture (padding removal)
     print("Visualizing Receptive fields")
     visualize_filters(model, model.conv1, num_filters=25)
     visualize_filters(model, model.conv2, num_filters=25)

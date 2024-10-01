@@ -4,7 +4,7 @@ This repository contains the code used in the experiments presented in the thesi
 
 ## Framework and Dataset
 
-- The code is built using **PyTorch**, a popular deep learning framework.
+- The code is built using **PyTorch**.
 - The experiments were conducted using the **CIFAR-10** dataset.
 - Only additional folders which will be required to be ctreated by the user are a results folder, with a demo folder inside it to store results if required, and a datasets folder with a folder called cifar10, where the Cifar-10 dataset will be automatically downloaded
 ## Running Experiments

@@ -1,2 +1,4 @@
-# Master_Thesis_Hopfield
-Hybrid Hopfield Network
+# Master_Thesis
+Hebbian CNN:
+
+

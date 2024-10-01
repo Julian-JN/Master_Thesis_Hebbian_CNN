@@ -41,9 +41,28 @@ hebb_param = {
 - `k`: Number of winners.
 - `alpha`: Learning rate for Hebbian updates.
 
+
+```python
+model = Net_Depthwise(hebb_params=hebb_param, version="softhebb")
+```
+- `version`: Defines the model architecture.
+  - `'softHebb'`: SoftHebb architecture
+  - `'lagani'`: Lagani 4-layer architecture
+  - `'lagani_short'`: Lagani 3-layer architecture
+  - `'hardhebb'`: SoftHebb architecture but without padding
 ### Surround Inhibition and Cosine Similarity
 
 To enable/disable **surround inhibition** or **cosine similarity activation**, you must manually adjust the code in the `hebb.py` file.
+```python
+y = self.cosine(x, w)
+```
+This code enables the cosine similarity activation
+```python
+if self.kernel != 1:
+    y = self.apply_surround_modulation(y)
+```
+
+This code enables the application a surround inhibition kernel
 
 ## Dale's Principle Layers
 

@@ -87,5 +87,4 @@ The **plots** that help to understand Hebbian learning and its dynamics are stor
 ## Future Work
 
 Future improvements include the ideas discussed in the thesis, along with:
-- Creating a `requirements.txt` file.
 - Adding an accompanying script to set up a virtual environment for faster integration by researchers.

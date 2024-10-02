@@ -1,7 +1,12 @@
 # Master Thesis: Hebbian CNN
 
-This repository contains the code used in the experiments presented in the thesis. Below is a guide to the structure and key elements of the project.
+This repository contains the code used in the experiments presented in the thesis. 
 
+The project builds on the works from:
+
+{https://github.com/GabrieleLagani/hebbdemo} and {https://github.com/NeuromorphicComputing/SoftHebb}
+
+Below is a guide to the structure and key elements of the project.
 ## Framework and Dataset
 
 - The code is built using **PyTorch**.
